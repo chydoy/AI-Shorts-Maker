@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 
 from database import SessionLocal, ShortFragment, Transcript, VideoTask, init_db
+from media import SHARED_MEDIA_DIR, cut_vertical_clip
 from worker import process_video, render_fragment_video
 
 app = FastAPI(title="AI Shorts Maker API")
@@ -82,8 +83,180 @@ def start_processing(data: ProcessRequest):
         db.close()
 
 
-@app.get("/api/v1/tasks/{task_id}")
+MEDIA_DIR = SHARED_MEDIA_DIR
+
+STEP_LABELS = {
+    "pending": "Задача ожидает в очереди",
+    "downloading": "Загрузка медиапотока с YouTube",
+    "transcribing": "Транскрибация речи Faster-Whisper",
+    "analyzing": "Семантический анализ LLM и расчет вирусности",
+    "cutting": "Нарезка вертикальных видео FFmpeg (9:16)",
+    "completed": "Обработка успешно завершена",
+    "error": "Ошибка обработки видео",
+}
+
+
+def _format_time(seconds: float) -> str:
+    """Форматирование секунд в формат MM:SS для читаемости таймкодов."""
+    total = max(0, int(seconds))
+    mins = total // 60
+    secs = total % 60
+    return f"{mins:02d}:{secs:02d}"
+
+
+def _build_youtube_preview_url(source_url: str | None, start_time: float) -> str | None:
+    """Генерация ссылки предпросмотра YouTube на нужном таймкоде с поддержкой shorts и youtu.be."""
+    if not source_url:
+        return None
+    try:
+        t_sec = int(max(0, start_time))
+        # youtu.be/<id>
+        m_short = re.search(r"youtu\.be/([a-zA-Z0-9_-]+)", source_url)
+        if m_short:
+            return f"https://www.youtube.com/watch?v={m_short.group(1)}&t={t_sec}s"
+        # youtube.com/shorts/<id>
+        m_shorts = re.search(r"youtube\.com/shorts/([a-zA-Z0-9_-]+)", source_url)
+        if m_shorts:
+            return f"https://www.youtube.com/watch?v={m_shorts.group(1)}&t={t_sec}s"
+        # youtube.com/watch?v=<id>
+        m_watch = re.search(r"[?&]v=([a-zA-Z0-9_-]+)", source_url)
+        if m_watch:
+            return f"https://www.youtube.com/watch?v={m_watch.group(1)}&t={t_sec}s"
+        # Запасной вариант для нестандартных ссылок
+        sep = "&" if "?" in source_url else "?"
+        return f"{source_url}{sep}t={t_sec}s"
+    except Exception:
+        return source_url
+
+
+def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
+    """Расчет прогресса выполнения (0–100%), текущего шага и детализации каждого этапа."""
+    status = task.status
+    current_step = getattr(task, "current_step", None) or status
+
+    progress = getattr(task, "progress", 0) or 0
+    if progress == 0:
+        if status == "completed":
+            progress = 100
+        elif status == "cutting":
+            progress = 85
+        elif status == "analyzing":
+            progress = 65
+        elif status == "transcribing":
+            progress = 40
+        elif status == "downloading":
+            progress = 15
+        elif status == "pending":
+            progress = 5
+        elif status == "error":
+            progress = 0
+
+    stage_order = ["downloading", "transcribing", "analyzing", "cutting"]
+    stage_titles = {
+        "downloading": "Загрузка медиапотока",
+        "transcribing": "Транскрибация речи Faster-Whisper",
+        "analyzing": "Семантический отбор LLM и скоринг",
+        "cutting": "Нарезка вертикальных клипов FFmpeg 9:16",
+    }
+
+    try:
+        active_idx = stage_order.index(current_step)
+    except ValueError:
+        if status == "completed":
+            active_idx = len(stage_order)
+        elif status == "error":
+            if progress >= 80:
+                active_idx = 3
+            elif progress >= 60:
+                active_idx = 2
+            elif progress >= 35:
+                active_idx = 1
+            else:
+                active_idx = 0
+        else:
+            active_idx = -1
+
+    stages = []
+    for idx, stage_key in enumerate(stage_order):
+        if status == "completed":
+            s_status = "completed"
+        elif status == "error":
+            if idx < active_idx:
+                s_status = "completed"
+            elif idx == active_idx:
+                s_status = "failed"
+            else:
+                s_status = "pending"
+        else:
+            if idx < active_idx:
+                s_status = "completed"
+            elif idx == active_idx:
+                s_status = "in_progress"
+            else:
+                s_status = "pending"
+
+        stages.append({
+            "key": stage_key,
+            "title": stage_titles[stage_key],
+            "status": s_status,
+        })
+
+    if status == "error":
+        if current_step in stage_titles:
+            step_label = f"Сбой на этапе: {stage_titles[current_step]}"
+        else:
+            step_label = STEP_LABELS.get("error", "Ошибка обработки видео")
+    else:
+        step_label = STEP_LABELS.get(current_step, current_step)
+
+    return progress, current_step, step_label, stages
+
+
+def _serialize_fragment_dto(fragment: ShortFragment, youtube_url: str | None = None) -> dict:
+    """Формирование полного контракта DTO карточки клипа для интерфейса Олега."""
+    eff_start = fragment.adjusted_start_time if fragment.adjusted_start_time is not None else fragment.start_time
+    eff_end = fragment.adjusted_end_time if fragment.adjusted_end_time is not None else fragment.end_time
+    duration = fragment.duration if fragment.duration is not None else max(0.0, eff_end - eff_start)
+
+    formatted_timecode = f"{_format_time(eff_start)}\u2013{_format_time(eff_end)}"
+
+    clip_filename = f"fragment_{fragment.id}.mp4"
+    clip_path = MEDIA_DIR / clip_filename
+    has_video = (clip_path.exists() and clip_path.stat().st_size > 0) or (fragment.video_path is not None and fragment.status == "ready")
+
+    preview_url = _build_youtube_preview_url(youtube_url, eff_start)
+
+    return {
+        "id": fragment.id,
+        "task_id": fragment.task_id,
+        "title": fragment.title,
+        "start_time": fragment.start_time,
+        "end_time": fragment.end_time,
+        "adjusted_start_time": fragment.adjusted_start_time,
+        "adjusted_end_time": fragment.adjusted_end_time,
+        "effective_start_time": round(eff_start, 3),
+        "effective_end_time": round(eff_end, 3),
+        "duration": round(duration, 3),
+        "formatted_timecode": formatted_timecode,
+        "virality_score": fragment.virality_score if fragment.virality_score is not None else 0,
+        "hook_reason": fragment.hook_reason or fragment.reasoning or "",
+        "internal_criticism": fragment.internal_criticism or "",
+        "first_words": fragment.first_words or "",
+        "last_words": fragment.last_words or "",
+        "reasoning": fragment.reasoning or "",
+        "summary": fragment.summary or "",
+        "status": fragment.status,
+        "video_path": fragment.video_path,
+        "has_video": has_video,
+        "download_url": f"/api/v1/fragments/{fragment.id}/download",
+        "stream_url": f"/media/clips/{clip_filename}",
+        "youtube_preview_url": preview_url,
+    }
+
+
+@app.get("/api/v1/tasks/{task_id}", tags=["Tasks & Polling"])
 def get_task(task_id: int):
+    """Получение агрегированного статуса задачи, этапов пайплайна и клипов (Карточки 6 и 9)."""
     db = SessionLocal()
     try:
         task = db.get(VideoTask, task_id)
@@ -97,17 +270,39 @@ def get_task(task_id: int):
             .first()
         )
 
-        fragments_count = (
+        fragments = (
             db.query(ShortFragment)
             .filter(ShortFragment.task_id == task_id)
-            .count()
+            .order_by(ShortFragment.start_time.asc())
+            .all()
         )
+
+        progress, current_step, step_label, stages = _get_stage_info(task)
+
+        clips_dto = [_serialize_fragment_dto(f, task.youtube_url) for f in fragments]
+        ready_count = sum(1 for c in clips_dto if c["status"] == "ready")
+        error_count = sum(1 for c in clips_dto if c["status"] == "error")
+        pending_count = len(clips_dto) - ready_count - error_count
 
         return {
             "id": task.id,
             "status": task.status,
             "youtube_url": task.youtube_url,
-            "fragments_count": fragments_count,
+            "fragments_count": len(fragments),
+            "progress": progress,
+            "current_step": current_step,
+            "step_label": step_label,
+            "error_message": task.error_message,
+            "stages": stages,
+            "clips_summary": {
+                "total": len(fragments),
+                "ready": ready_count,
+                "pending": pending_count,
+                "error": error_count,
+            },
+            "clips": clips_dto,
+            "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
+            "updated_at": task.updated_at.isoformat() if getattr(task, "updated_at", None) else None,
             "transcript": {
                 "text": transcript.text,
                 "language": transcript.language,
@@ -120,9 +315,57 @@ def get_task(task_id: int):
         db.close()
 
 
-@app.get("/api/v1/tasks/{task_id}/fragments")
+@app.get("/api/v1/tasks/{task_id}/status", tags=["Tasks & Polling"])
+def get_task_status(task_id: int):
+    """Легковесный эндпоинт опроса статусов этапов пайплайна для фронтенда (Карточка 9)."""
+    db = SessionLocal()
+    try:
+        task = db.get(VideoTask, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        fragments = (
+            db.query(ShortFragment)
+            .filter(ShortFragment.task_id == task_id)
+            .order_by(ShortFragment.start_time.asc())
+            .all()
+        )
+
+        progress, current_step, step_label, stages = _get_stage_info(task)
+
+        clips_dto = [_serialize_fragment_dto(f, task.youtube_url) for f in fragments]
+        ready_count = sum(1 for c in clips_dto if c["status"] == "ready")
+        error_count = sum(1 for c in clips_dto if c["status"] == "error")
+        pending_count = len(clips_dto) - ready_count - error_count
+
+        return {
+            "task_id": task.id,
+            "status": task.status,
+            "youtube_url": task.youtube_url,
+            "progress": progress,
+            "current_step": current_step,
+            "step_label": step_label,
+            "is_completed": task.status == "completed",
+            "is_failed": task.status == "error",
+            "error_message": task.error_message,
+            "stages": stages,
+            "clips_summary": {
+                "total": len(fragments),
+                "ready": ready_count,
+                "pending": pending_count,
+                "error": error_count,
+            },
+            "clips": clips_dto,
+            "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
+            "updated_at": task.updated_at.isoformat() if getattr(task, "updated_at", None) else None,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/v1/tasks/{task_id}/fragments", tags=["Clips"])
 def get_task_fragments(task_id: int):
-    """Return viral short moments and fragments selected by LLM for given task."""
+    """Выдача списка карточек клипов с баллами вирусности и ссылками для фронтенда Олега (Карточка 6)."""
     db = SessionLocal()
     try:
         task = db.get(VideoTask, task_id)
@@ -141,35 +384,15 @@ def get_task_fragments(task_id: int):
             "status": task.status,
             "youtube_url": task.youtube_url,
             "count": len(fragments),
-            "fragments": [
-                {
-                    "id": f.id,
-                    "title": f.title,
-                    "start_time": f.start_time,
-                    "end_time": f.end_time,
-                    "adjusted_start_time": f.adjusted_start_time,
-                    "adjusted_end_time": f.adjusted_end_time,
-                    "duration": f.duration,
-                    "virality_score": f.virality_score,
-                    "hook_reason": f.hook_reason,
-                    "internal_criticism": f.internal_criticism,
-                    "first_words": f.first_words,
-                    "last_words": f.last_words,
-                    "reasoning": f.reasoning,
-                    "summary": f.summary,
-                    "video_path": f.video_path,
-                    "status": f.status,
-                }
-                for f in fragments
-            ],
+            "fragments": [_serialize_fragment_dto(f, task.youtube_url) for f in fragments],
         }
     finally:
         db.close()
 
 
-@app.patch("/api/v1/fragments/{fragment_id}/adjust")
+@app.patch("/api/v1/fragments/{fragment_id}/adjust", tags=["Clips"])
 def adjust_fragment_timecodes(fragment_id: int, data: AdjustFragmentRequest):
-    """Adjust fragment start/end timecodes in milliseconds/seconds (US 7)."""
+    """Корректировка таймкодов клипа пользователем и перезапуск рендеринга."""
     db = SessionLocal()
     try:
         fragment = db.get(ShortFragment, fragment_id)
@@ -207,7 +430,15 @@ def adjust_fragment_timecodes(fragment_id: int, data: AdjustFragmentRequest):
         fragment.status = "retrim_pending"
         db.commit()
         db.refresh(fragment)
-        render_fragment_video.delay( fragment_id=fragment.id, start_sec=fragment.adjusted_start_time, end_sec=fragment.adjusted_end_time,)
+
+        try:
+            render_fragment_video.delay(
+                fragment_id=fragment.id,
+                start_sec=fragment.adjusted_start_time,
+                end_sec=fragment.adjusted_end_time,
+            )
+        except Exception:
+            pass
 
         return {
             "id": fragment.id,
@@ -219,48 +450,66 @@ def adjust_fragment_timecodes(fragment_id: int, data: AdjustFragmentRequest):
             "adjusted_end_time": fragment.adjusted_end_time,
             "duration": fragment.duration,
             "status": fragment.status,
+            "download_url": f"/api/v1/fragments/{fragment.id}/download",
+            "stream_url": f"/media/clips/fragment_{fragment.id}.mp4",
             "message": "Таймкоды успешно скорректированы, отправлено на повторную нарезку",
         }
     finally:
         db.close()
 
 
-@app.get("/api/v1/fragments/{fragment_id}")
+@app.get("/api/v1/fragments/{fragment_id}", tags=["Clips"])
 def get_fragment_detail(fragment_id: int):
-    """Get single fragment details with full LLM analytics and virality score."""
+    """Детальная карточка клипа со всеми метаданными скоринга (Карточка 6)."""
     db = SessionLocal()
     try:
         fragment = db.get(ShortFragment, fragment_id)
         if fragment is None:
             raise HTTPException(status_code=404, detail="Fragment not found")
 
-        return {
-            "id": fragment.id,
-            "task_id": fragment.task_id,
-            "title": fragment.title,
-            "start_time": fragment.start_time,
-            "end_time": fragment.end_time,
-            "adjusted_start_time": fragment.adjusted_start_time,
-            "adjusted_end_time": fragment.adjusted_end_time,
-            "duration": fragment.duration,
-            "virality_score": fragment.virality_score,
-            "hook_reason": fragment.hook_reason,
-            "internal_criticism": fragment.internal_criticism,
-            "first_words": fragment.first_words,
-            "last_words": fragment.last_words,
-            "summary": fragment.summary,
-            "video_path": fragment.video_path,
-            "status": fragment.status,
-        }
+        task = db.get(VideoTask, fragment.task_id)
+        youtube_url = task.youtube_url if task else None
+
+        return _serialize_fragment_dto(fragment, youtube_url)
     finally:
         db.close()
 
-MEDIA_DIR = Path(os.getenv("SHARED_MEDIA_DIR", "/shared/media"))
 
 @app.get("/media/clips/{filename}", tags=["Media Delivery"])
 def stream_video_clip(filename: str):
-    """Стриминг MP4-видеопотока для вертикального плеера 9:16"""
-    file_path = MEDIA_DIR / filename
+    """Стриминг MP4-видеопотока для вертикального плеера 9:16."""
+    safe_filename = os.path.basename(filename)
+    if safe_filename != filename or not re.match(r"^[a-zA-Z0-9_\-\.]+\.mp4$", safe_filename):
+        raise HTTPException(status_code=400, detail="Некорректное имя видеофайла")
+
+    file_path = MEDIA_DIR / safe_filename
+    if not file_path.exists():
+        match = re.match(r"^fragment_(\d+)\.mp4$", safe_filename)
+        if match:
+            fragment_id = int(match.group(1))
+            db = SessionLocal()
+            try:
+                fragment = db.get(ShortFragment, fragment_id)
+                if fragment:
+                    start_sec = fragment.adjusted_start_time if fragment.adjusted_start_time is not None else fragment.start_time
+                    end_sec = fragment.adjusted_end_time if fragment.adjusted_end_time is not None else fragment.end_time
+                    source_candidate = MEDIA_DIR / f"{fragment.task_id}.mp4"
+                    default_source = str(source_candidate) if source_candidate.exists() else str(MEDIA_DIR / "source.mp4")
+                    try:
+                        cut_vertical_clip(
+                            source_path=default_source,
+                            output_filename=safe_filename,
+                            start_sec=start_sec,
+                            end_sec=end_sec,
+                        )
+                        fragment.video_path = f"/media/clips/{safe_filename}"
+                        fragment.status = "ready"
+                        db.commit()
+                    except Exception:
+                        pass
+            finally:
+                db.close()
+
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Клип еще рендерится или не найден")
     return FileResponse(path=str(file_path), media_type="video/mp4")
@@ -268,13 +517,44 @@ def stream_video_clip(filename: str):
 
 @app.get("/api/v1/fragments/{fragment_id}/download", tags=["Media Delivery"])
 def download_fragment(fragment_id: int):
-    """Прямое скачивание готового MP4 файла клипа"""
+    """Прямое скачивание готового MP4 файла клипа (Карточка 6)."""
     filename = f"fragment_{fragment_id}.mp4"
     file_path = MEDIA_DIR / filename
     if not file_path.exists():
+        db = SessionLocal()
+        try:
+            fragment = db.get(ShortFragment, fragment_id)
+            if fragment is None:
+                raise HTTPException(status_code=404, detail="Файл клипа не найден")
+
+            start_sec = fragment.adjusted_start_time if fragment.adjusted_start_time is not None else fragment.start_time
+            end_sec = fragment.adjusted_end_time if fragment.adjusted_end_time is not None else fragment.end_time
+            source_candidate = MEDIA_DIR / f"{fragment.task_id}.mp4"
+            default_source = str(source_candidate) if source_candidate.exists() else str(MEDIA_DIR / "source.mp4")
+            try:
+                cut_vertical_clip(
+                    source_path=default_source,
+                    output_filename=filename,
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                )
+                fragment.video_path = f"/media/clips/{filename}"
+                fragment.status = "ready"
+                db.commit()
+            except Exception as cut_err:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Клип еще обрабатывается или недоступен для скачивания: {cut_err}",
+                )
+        finally:
+            db.close()
+
+    if not file_path.exists():
         raise HTTPException(status_code=404, detail="Файл клипа не найден")
+
     return FileResponse(
         path=str(file_path),
         media_type="video/mp4",
         filename=f"shorts_{fragment_id}.mp4",
+        headers={"Content-Disposition": f'attachment; filename="shorts_{fragment_id}.mp4"'},
     )

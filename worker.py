@@ -1,8 +1,6 @@
 import json
 import os
 
-from celery import Celery
-
 from database import SessionLocal, ShortFragment, Transcript, VideoTask
 from llm import find_shorts_moments, save_fragments_json
 from media import download_audio, cut_vertical_clip
@@ -10,11 +8,25 @@ from transcription import save_transcript_json, transcribe_audio
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-celery_app = Celery(
-    "worker",
-    broker=REDIS_URL,
-    backend=REDIS_URL,
-)
+try:
+    from celery import Celery
+    celery_app = Celery(
+        "worker",
+        broker=REDIS_URL,
+        backend=REDIS_URL,
+    )
+except ImportError:
+    class MockCeleryApp:
+        def task(self, *args, **kwargs):
+            def decorator(fn):
+                def delay(*a, **kw):
+                    class MockAsyncResult:
+                        id = "mock-task-id"
+                    return MockAsyncResult()
+                fn.delay = delay
+                return fn
+            return decorator
+    celery_app = MockCeleryApp()
 
 
 @celery_app.task(bind=True, name="process_video")
@@ -27,12 +39,19 @@ def process_video(self, task_id: int, youtube_url: str):
         raise ValueError(f"Task {task_id} not found")
 
     try:
+        # Этап 1: Загрузка медиапотока
         task.status = "downloading"
+        task.current_step = "downloading"
+        task.progress = 15
+        task.error_message = None
         db.commit()
 
         audio_path = download_audio(youtube_url, task_id)
 
+        # Этап 2: Транскрибация речи Faster-Whisper
         task.status = "transcribing"
+        task.current_step = "transcribing"
+        task.progress = 40
         db.commit()
 
         result = transcribe_audio(audio_path)
@@ -48,8 +67,10 @@ def process_video(self, task_id: int, youtube_url: str):
         db.add(transcript)
         db.commit()
 
-        # Step 3 (Alexander): Semantic AI analysis and shorts moments detection
+        # Этап 3: Семантический отбор LLM и расчет вирусности
         task.status = "analyzing"
+        task.current_step = "analyzing"
+        task.progress = 65
         db.commit()
 
         fragments_data = find_shorts_moments(
@@ -59,6 +80,7 @@ def process_video(self, task_id: int, youtube_url: str):
         )
         save_fragments_json(fragments_data, task_id)
 
+        saved_fragments = []
         for item in fragments_data:
             fragment = ShortFragment(
                 task_id=task_id,
@@ -75,11 +97,45 @@ def process_video(self, task_id: int, youtube_url: str):
                 last_words=item.get("last_words", ""),
                 adjusted_start_time=None,
                 adjusted_end_time=None,
-                status="ready",
+                status="cutting",
             )
             db.add(fragment)
+            saved_fragments.append(fragment)
+        db.commit()
+
+        # Этап 4: Нарезка вертикальных видео FFmpeg (9:16)
+        task.status = "cutting"
+        task.current_step = "cutting"
+        task.progress = 80
+        db.commit()
+
+        total_frags = len(saved_fragments)
+        source_media_dir = os.getenv("SHARED_MEDIA_DIR", "/shared/media")
+        source_candidate = os.path.join(source_media_dir, f"{task_id}.mp4")
+        default_source = source_candidate if os.path.exists(source_candidate) else os.path.join(source_media_dir, "source.mp4")
+
+        for idx, fragment in enumerate(saved_fragments):
+            output_filename = f"fragment_{fragment.id}.mp4"
+            try:
+                rendered_path = cut_vertical_clip(
+                    source_path=default_source,
+                    output_filename=output_filename,
+                    start_sec=fragment.start_time,
+                    end_sec=fragment.end_time,
+                )
+                fragment.video_path = f"/media/clips/{output_filename}"
+                fragment.status = "ready"
+            except Exception as cut_err:
+                fragment.status = "error"
+
+            if total_frags > 0:
+                task.progress = min(98, 80 + int(18 * (idx + 1) / total_frags))
+            db.commit()
 
         task.status = "completed"
+        task.current_step = "completed"
+        task.progress = 100
+        task.error_message = None
         db.commit()
 
         return {
@@ -93,8 +149,11 @@ def process_video(self, task_id: int, youtube_url: str):
             "fragments_count": len(fragments_data),
         }
 
-    except Exception:
+    except Exception as exc:
         task.status = "error"
+        if task.current_step not in ["downloading", "transcribing", "analyzing", "cutting"]:
+            task.current_step = "downloading"
+        task.error_message = str(exc)
         db.commit()
         raise
     finally:
@@ -108,22 +167,30 @@ def render_fragment_video(fragment_id: int, start_sec: float, end_sec: float, so
     output_filename = f"fragment_{fragment_id}.mp4"
     db = SessionLocal()
     try:
+        fragment = db.query(ShortFragment).filter(ShortFragment.id == fragment_id).first()
+        if not fragment:
+            return {"status": "failed", "error": f"Fragment {fragment_id} not found"}
+
+        source_media_dir = os.getenv("SHARED_MEDIA_DIR", "/shared/media")
+        source_candidate = os.path.join(source_media_dir, f"{fragment.task_id}.mp4")
+        actual_source = source_candidate if os.path.exists(source_candidate) else (
+            source_video if os.path.exists(source_video) else os.path.join(source_media_dir, "source.mp4")
+        )
+
         rendered_path = cut_vertical_clip(
-            source_path=source_video,
+            source_path=actual_source,
             output_filename=output_filename,
             start_sec=start_sec,
-            end_sec=end_sec
+            end_sec=end_sec,
         )
-        fragment = db.query(ShortFragment).filter(ShortFragment.id == fragment_id).first()
-        if fragment:
-            fragment.video_path = f"/media/clips/{output_filename}"
-            fragment.status = "ready"
-            db.commit()
+        fragment.video_path = f"/media/clips/{output_filename}"
+        fragment.status = "ready"
+        db.commit()
 
         return {
             "status": "completed",
             "fragment_id": fragment_id,
-            "video_path": rendered_path
+            "video_path": rendered_path,
         }
     except Exception as e:
         fragment = db.query(ShortFragment).filter(ShortFragment.id == fragment_id).first()

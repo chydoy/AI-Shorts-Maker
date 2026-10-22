@@ -1,4 +1,4 @@
-# AI Shorts Maker — Полная сборка (Части 1, 2 и 3)
+# AI Shorts Maker: Полная сборка (Части 1, 2 и 3)
 
 ## Архитектура и реализованный функционал
 
@@ -58,9 +58,9 @@ docker compose up --build
 }
 ```
 2. Скопируйте полученный `task_id`.
-3. Откройте **`GET /api/v1/tasks/{task_id}`** — статус последовательно пройдет:
+3. Откройте **`GET /api/v1/tasks/{task_id}`**: статус последовательно пройдет:
    `pending` ➔ `downloading` ➔ `transcribing` ➔ `analyzing` ➔ `completed`.
-4. Откройте **`GET /api/v1/tasks/{task_id}/fragments`** — вы получите массив отобранных шортсов с точными таймкодами, заголовками и обоснованием вирусности.
+4. Откройте **`GET /api/v1/tasks/{task_id}/fragments`**: возвращается массив отобранных шортсов с точными таймкодами, заголовками и обоснованием вирусности.
 
 ---
 
@@ -72,7 +72,7 @@ docker compose down
 
 
 ### 4. Пользовательский интерфейс и входной шлюз (Олег)
-- `frontend/` — Next.js + Tailwind CSS интерфейс.
+- `frontend/`: Next.js + Tailwind CSS интерфейс.
 - Форма принимает и валидирует YouTube URL.
 - `POST /api/v1/process` создаёт задачу и запускает Celery pipeline.
 - Frontend автоматически опрашивает `GET /api/v1/tasks/{id}` до завершения.

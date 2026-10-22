@@ -233,6 +233,73 @@ def _execute_llm_request(
     return None
 
 
+def _align_fragments_to_words(fragments: list[dict], words: list[dict]) -> list[dict]:
+    """Snap fragment timestamps to word boundaries from Faster-Whisper to eliminate audio cutoffs."""
+    if not fragments or not words:
+        return fragments
+
+    aligned = []
+    for frag in fragments:
+        start_t = float(frag.get("start_time", 0.0))
+        end_t = float(frag.get("end_time", 0.0))
+
+        # Find closest start word within 4.0 seconds
+        best_start_word = None
+        min_start_diff = float("inf")
+        for w in words:
+            diff = abs(w.get("start", 0.0) - start_t)
+            if diff < min_start_diff and diff <= 4.0:
+                min_start_diff = diff
+                best_start_word = w
+
+        if best_start_word is not None:
+            # Buffer -50ms for speech clarity without negative time
+            start_t = max(0.0, round(best_start_word.get("start", start_t) - 0.05, 3))
+
+        # Find closest end word within 4.0 seconds
+        best_end_word = None
+        min_end_diff = float("inf")
+        for w in words:
+            diff = abs(w.get("end", 0.0) - end_t)
+            if diff < min_end_diff and diff <= 4.0:
+                min_end_diff = diff
+                best_end_word = w
+
+        if best_end_word is not None:
+            # Buffer +100ms so last syllable is not truncated
+            end_t = round(best_end_word.get("end", end_t) + 0.10, 3)
+
+        if end_t <= start_t:
+            end_t = start_t + 15.0
+
+        duration = round(end_t - start_t, 3)
+        if duration > 65.0:
+            end_t = round(start_t + 60.0, 3)
+            duration = 60.0
+
+        # Anchor words from word list if missing or short
+        window_words = [w for w in words if start_t - 0.2 <= w.get("start", 0.0) <= end_t + 0.2]
+        first_words = frag.get("first_words", "").strip()
+        last_words = frag.get("last_words", "").strip()
+        if window_words and (not first_words or len(first_words.split()) < 2):
+            first_words = " ".join(w.get("word", "").strip() for w in window_words[:4]).strip(" ,;:!?-")
+        if window_words and (not last_words or len(last_words.split()) < 2):
+            last_words = " ".join(w.get("word", "").strip() for w in window_words[-4:]).strip(" ,;:!?-")
+
+        updated_frag = dict(frag)
+        updated_frag["start_time"] = start_t
+        updated_frag["end_time"] = end_t
+        updated_frag["duration"] = duration
+        if first_words:
+            updated_frag["first_words"] = first_words
+        if last_words:
+            updated_frag["last_words"] = last_words
+
+        aligned.append(updated_frag)
+
+    return aligned
+
+
 def find_shorts_moments(text: str, words: list[dict], task_id: int | None = None) -> list[dict]:
     """Analyze video transcript and find viral short moments up to 60 seconds with automatic LLM fallback cascade."""
     if not text.strip():
@@ -241,14 +308,14 @@ def find_shorts_moments(text: str, words: list[dict], task_id: int | None = None
     timed_transcript = _prepare_timed_transcript(words) if words else text
 
     system_prompt = (
-        "Ты — главный шеф-редактор и продюсер вирусных YouTube Shorts, Reels и TikTok с миллионными охватами.\n"
+        "Ты являешься главным шеф-редактором и продюсером вирусных YouTube Shorts, Reels и TikTok с миллионными охватами.\n"
         "Твоя цель: проанализировать расшифровку видео с таймкодами и отобрать от 1 до 5 самых вирусных, "
         "смысловых и эмоционально цепляющих моментов.\n\n"
         "МЕТОДОЛОГИЯ АДВОКАТА ДЬЯВОЛА И САМОКРИТИКИ (SELF-DEBATE):\n"
         "Для каждого потенциального момента ты ОБЯЗАН провести внутренний спор Оптимиста (ищет вирусность) "
         "и Скептика-Критика (ищет причины свайпнуть видео):\n"
         "1. The 3-Second Hook Rule (Сила хука, max 30 баллов): Первые 3 секунды обязаны содержать интригующий вопрос, "
-        "парадокс или острый тезис. Если спикер начинает со слов 'Ну', 'Кстати', 'И вот', вздохов или мычания — Скептик штрафует фрагмент "
+        "парадокс или острый тезис. Если спикер начинает со слов 'Ну', 'Кстати', 'И вот', вздохов или мычания, то Скептик штрафует фрагмент "
         "и сдвигает старт прямо к началу ударной мысли.\n"
         "2. The Stranger Test (Автономность контекста, max 30 баллов): Зритель, который никогда не смотрел исходное видео, "
         "обязан мгновенно понять суть без предыстории. Запрещены повисшие местоимения без субъекта ('он сказал ему', 'из-за этого случая').\n"
@@ -292,7 +359,7 @@ def find_shorts_moments(text: str, words: list[dict], task_id: int | None = None
             fragments = _execute_llm_request(OPENAI_API_KEY, OPENAI_BASE_URL, LLM_MODEL, system_prompt, user_prompt)
             if fragments:
                 logger.info("Primary LLM provider returned %d fragments.", len(fragments))
-                return fragments
+                return _align_fragments_to_words(fragments, words)
         except Exception as exc:
             logger.warning("Primary LLM provider failed (%s). Attempting backup provider...", exc)
 
@@ -303,13 +370,14 @@ def find_shorts_moments(text: str, words: list[dict], task_id: int | None = None
             fragments = _execute_llm_request(BACKUP_OPENAI_API_KEY, BACKUP_OPENAI_BASE_URL, BACKUP_LLM_MODEL, system_prompt, user_prompt)
             if fragments:
                 logger.info("Backup LLM provider returned %d fragments.", len(fragments))
-                return fragments
+                return _align_fragments_to_words(fragments, words)
         except Exception as exc:
             logger.warning("Backup LLM provider failed (%s). Falling back to heuristic segmentation...", exc)
 
     # 3. Офлайн-страховка: эвристический отбор по паузам речи Faster-Whisper
     logger.info("Using reliable heuristic fallback segmentation.")
-    return _fallback_extract_moments(text, words)
+    fallback_frags = _fallback_extract_moments(text, words)
+    return _align_fragments_to_words(fallback_frags, words)
 
 
 def save_fragments_json(fragments: list[dict], task_id: int) -> str:

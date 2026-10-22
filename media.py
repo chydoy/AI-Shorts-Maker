@@ -2,16 +2,20 @@ import logging
 import os
 from pathlib import Path
 import subprocess
-import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-SHARED_MEDIA_DIR = Path("/shared/media")
-SHARED_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+SHARED_MEDIA_DIR = Path(os.getenv("SHARED_MEDIA_DIR", "/shared/media"))
+try:
+    SHARED_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    SHARED_MEDIA_DIR = Path("./media")
+    SHARED_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def download_audio(youtube_url: str, task_id: int) -> str:
     """Download YouTube audio and convert it to WAV using the FFmpeg installed in Docker."""
+    import yt_dlp
     output_template = str(SHARED_MEDIA_DIR / f"{task_id}.%(ext)s")
 
     options = {

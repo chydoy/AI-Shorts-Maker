@@ -2,8 +2,6 @@ import json
 import os
 from pathlib import Path
 
-from faster_whisper import WhisperModel
-
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "small")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
@@ -11,9 +9,10 @@ COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 _model = None
 
 
-def get_model() -> WhisperModel:
+def get_model():
     global _model
     if _model is None:
+        from faster_whisper import WhisperModel
         _model = WhisperModel(
             MODEL_SIZE,
             device=DEVICE,

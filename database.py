@@ -15,6 +15,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def _utcnow():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
 class VideoTask(Base):
     __tablename__ = "video_tasks"
 
@@ -22,7 +26,11 @@ class VideoTask(Base):
     session_id = Column(String, index=True)
     youtube_url = Column(String, nullable=False)
     status = Column(String, default="pending", nullable=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    progress = Column(Integer, default=0, nullable=False)
+    current_step = Column(String, default="pending", nullable=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class Transcript(Base):
@@ -34,7 +42,7 @@ class Transcript(Base):
     text = Column(Text, nullable=False)
     words_json = Column(Text, nullable=False)
     language = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class ShortFragment(Base):
@@ -60,7 +68,7 @@ class ShortFragment(Base):
     video_path = Column(String, nullable=True)
     status = Column(String, default="ready", nullable=False)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 def init_db(retries: int = 10, delay: int = 2):
@@ -70,6 +78,27 @@ def init_db(retries: int = 10, delay: int = 2):
             Base.metadata.create_all(bind=engine)
             # Automatic safe migration for new Sprint 2 columns if tables already existed
             with engine.connect() as conn:
+                task_columns = [
+                    ("progress", "INTEGER DEFAULT 0"),
+                    ("current_step", "VARCHAR DEFAULT 'pending'"),
+                    ("error_message", "TEXT"),
+                    ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ]
+                for col_name, col_type in task_columns:
+                    try:
+                        if engine.dialect.name == "sqlite":
+                            res = conn.exec_driver_sql("PRAGMA table_info(video_tasks)").fetchall()
+                            existing_cols = [r[1] for r in res]
+                            if col_name not in existing_cols:
+                                conn.exec_driver_sql(f"ALTER TABLE video_tasks ADD COLUMN {col_name} {col_type}")
+                        else:
+                            conn.exec_driver_sql(f"ALTER TABLE video_tasks ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
                 new_columns = [
                     ("virality_score", "INTEGER DEFAULT 0"),
                     ("hook_reason", "TEXT"),
@@ -91,7 +120,10 @@ def init_db(retries: int = 10, delay: int = 2):
                         else:
                             conn.exec_driver_sql(f"ALTER TABLE short_fragments ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
                     except Exception:
-                        pass
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
                 conn.commit()
             return
         except Exception as exc:
