@@ -7,8 +7,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1").strip()
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile").strip()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.orcarouter.ai/v1").strip()
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek/deepseek-v4.1-flash-free").strip()
+
+# Резервный провайдер (горячий бекап Groq API)
+BACKUP_OPENAI_API_KEY = os.getenv("BACKUP_OPENAI_API_KEY", "").strip()
+BACKUP_OPENAI_BASE_URL = os.getenv("BACKUP_OPENAI_BASE_URL", "https://api.groq.com/openai/v1").strip()
+BACKUP_LLM_MODEL = os.getenv("BACKUP_LLM_MODEL", "llama-3.3-70b-versatile").strip()
 
 
 SHARED_MEDIA_DIR = Path(os.getenv("SHARED_MEDIA_DIR", "/shared/media"))
@@ -143,14 +148,95 @@ def _fallback_extract_moments(text: str, words: list[dict]) -> list[dict]:
     ]
 
 
+def _execute_llm_request(
+    api_key: str,
+    base_url: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> list[dict] | None:
+    """Execute chat completion request to an OpenAI-compatible API endpoint."""
+    if not api_key:
+        return None
+
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=35.0,
+    )
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.3,
+        response_format={"type": "json_object"},
+    )
+
+    content = response.choices[0].message.content or "{}"
+    clean_content = content.strip()
+    if clean_content.startswith("```"):
+        clean_content = re.sub(r"^```(?:json)?\s*", "", clean_content)
+        clean_content = re.sub(r"\s*```$", "", clean_content).strip()
+
+    parsed = json.loads(clean_content)
+    if isinstance(parsed, list):
+        raw_fragments = parsed
+    else:
+        raw_fragments = parsed.get("fragments") or parsed.get("shorts") or parsed.get("clips") or []
+
+    validated = []
+    for frag in raw_fragments:
+        try:
+            start = float(frag.get("start_time", 0.0))
+            end = float(frag.get("end_time", 0.0))
+            if end <= start:
+                continue
+
+            duration = round(end - start, 2)
+            # Keep within shorts window (12s to 65s)
+            if duration > 65.0:
+                end = start + 60.0
+                duration = 60.0
+
+            score = int(frag.get("virality_score", 80))
+            score = max(1, min(100, score))
+
+            hook_reason = str(frag.get("hook_reason", "")).strip() or str(frag.get("reasoning", "")).strip()
+            criticism = str(frag.get("internal_criticism", "")).strip()
+
+            validated.append(
+                {
+                    "title": str(frag.get("title", "Вирусный фрагмент")).strip(),
+                    "start_time": round(start, 2),
+                    "end_time": round(end, 2),
+                    "duration": duration,
+                    "first_words": str(frag.get("first_words", "")).strip(),
+                    "last_words": str(frag.get("last_words", "")).strip(),
+                    "virality_score": score,
+                    "hook_reason": hook_reason,
+                    "internal_criticism": criticism,
+                    "reasoning": hook_reason,
+                    "summary": str(frag.get("summary", "")).strip(),
+                }
+            )
+        except (ValueError, TypeError):
+            continue
+
+    if validated:
+        validated.sort(key=lambda x: x["virality_score"], reverse=True)
+        return validated
+    return None
+
+
 def find_shorts_moments(text: str, words: list[dict], task_id: int | None = None) -> list[dict]:
-    """Analyze video transcript and find viral short moments up to 60 seconds using adversarial LLM debate."""
+    """Analyze video transcript and find viral short moments up to 60 seconds with automatic LLM fallback cascade."""
     if not text.strip():
         return []
-
-    if not OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY is not configured. Falling back to heuristic segmentation.")
-        return _fallback_extract_moments(text, words)
 
     timed_transcript = _prepare_timed_transcript(words) if words else text
 
@@ -199,86 +285,31 @@ def find_shorts_moments(text: str, words: list[dict], task_id: int | None = None
         "Проведи глубокий критический анализ, примени 4 теста и верни только лучшие вирусные моменты (Virality Score >= 75) в формате JSON."
     )
 
-    try:
-        from openai import OpenAI
+    # 1. Попытка через основной провайдер (OrcaRouter)
+    if OPENAI_API_KEY:
+        try:
+            logger.info("Calling primary LLM provider (%s / %s)...", OPENAI_BASE_URL, LLM_MODEL)
+            fragments = _execute_llm_request(OPENAI_API_KEY, OPENAI_BASE_URL, LLM_MODEL, system_prompt, user_prompt)
+            if fragments:
+                logger.info("Primary LLM provider returned %d fragments.", len(fragments))
+                return fragments
+        except Exception as exc:
+            logger.warning("Primary LLM provider failed (%s). Attempting backup provider...", exc)
 
-        client = OpenAI(
-            api_key=OPENAI_API_KEY,
-            base_url=OPENAI_BASE_URL,
-            timeout=45.0,
-        )
+    # 2. Попытка через резервный провайдер (Groq API)
+    if BACKUP_OPENAI_API_KEY:
+        try:
+            logger.info("Calling backup LLM provider (%s / %s)...", BACKUP_OPENAI_BASE_URL, BACKUP_LLM_MODEL)
+            fragments = _execute_llm_request(BACKUP_OPENAI_API_KEY, BACKUP_OPENAI_BASE_URL, BACKUP_LLM_MODEL, system_prompt, user_prompt)
+            if fragments:
+                logger.info("Backup LLM provider returned %d fragments.", len(fragments))
+                return fragments
+        except Exception as exc:
+            logger.warning("Backup LLM provider failed (%s). Falling back to heuristic segmentation...", exc)
 
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-            response_format={"type": "json_object"},
-        )
-
-        content = response.choices[0].message.content or "{}"
-        clean_content = content.strip()
-        if clean_content.startswith("```"):
-            clean_content = re.sub(r"^```(?:json)?\s*", "", clean_content)
-            clean_content = re.sub(r"\s*```$", "", clean_content).strip()
-
-        parsed = json.loads(clean_content)
-        if isinstance(parsed, list):
-            raw_fragments = parsed
-        else:
-            raw_fragments = parsed.get("fragments") or parsed.get("shorts") or parsed.get("clips") or []
-
-        validated = []
-        for frag in raw_fragments:
-            try:
-                start = float(frag.get("start_time", 0.0))
-                end = float(frag.get("end_time", 0.0))
-                if end <= start:
-                    continue
-
-                duration = round(end - start, 2)
-                # Keep within shorts window (12s to 65s)
-                if duration > 65.0:
-                    end = start + 60.0
-                    duration = 60.0
-
-                score = int(frag.get("virality_score", 80))
-                score = max(1, min(100, score))
-
-                hook_reason = str(frag.get("hook_reason", "")).strip() or str(frag.get("reasoning", "")).strip()
-                criticism = str(frag.get("internal_criticism", "")).strip()
-
-                validated.append(
-                    {
-                        "title": str(frag.get("title", "Вирусный фрагмент")).strip(),
-                        "start_time": round(start, 2),
-                        "end_time": round(end, 2),
-                        "duration": duration,
-                        "first_words": str(frag.get("first_words", "")).strip(),
-                        "last_words": str(frag.get("last_words", "")).strip(),
-                        "virality_score": score,
-                        "hook_reason": hook_reason,
-                        "internal_criticism": criticism,
-                        "reasoning": hook_reason,
-                        "summary": str(frag.get("summary", "")).strip(),
-                    }
-                )
-            except (ValueError, TypeError):
-                continue
-
-        if validated:
-            # Sort by virality_score descending so highest quality clips come first
-            validated.sort(key=lambda x: x["virality_score"], reverse=True)
-            return validated
-
-        logger.warning("LLM returned empty or invalid fragments list. Using fallback.")
-        return _fallback_extract_moments(text, words)
-
-    except Exception as exc:
-        logger.error(f"Error calling LLM API ({exc}). Using reliable fallback segmentation.")
-        return _fallback_extract_moments(text, words)
+    # 3. Офлайн-страховка: эвристический отбор по паузам речи Faster-Whisper
+    logger.info("Using reliable heuristic fallback segmentation.")
+    return _fallback_extract_moments(text, words)
 
 
 def save_fragments_json(fragments: list[dict], task_id: int) -> str:
