@@ -5,7 +5,7 @@ from celery import Celery
 
 from database import SessionLocal, ShortFragment, Transcript, VideoTask
 from llm import find_shorts_moments, save_fragments_json
-from media import download_audio
+from media import download_audio, cut_vertical_clip
 from transcription import save_transcript_json, transcribe_audio
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -97,5 +97,39 @@ def process_video(self, task_id: int, youtube_url: str):
         task.status = "error"
         db.commit()
         raise
+    finally:
+        db.close()
+
+
+
+@celery_app.task(name="render_fragment_video")
+def render_fragment_video(fragment_id: int, start_sec: float, end_sec: float, source_video: str = "/shared/media/source.mp4"):
+    """Асинхронность: генерация физического MP4 клипа и записи пути в БД"""
+    output_filename = f"fragment_{fragment_id}.mp4"
+    db = SessionLocal()
+    try:
+        rendered_path = cut_vertical_clip(
+            source_path=source_video,
+            output_filename=output_filename,
+            start_sec=start_sec,
+            end_sec=end_sec
+        )
+        fragment = db.query(ShortFragment).filter(ShortFragment.id == fragment_id).first()
+        if fragment:
+            fragment.video_path = f"/media/clips/{output_filename}"
+            fragment.status = "ready"
+            db.commit()
+
+        return {
+            "status": "completed",
+            "fragment_id": fragment_id,
+            "video_path": rendered_path
+        }
+    except Exception as e:
+        fragment = db.query(ShortFragment).filter(ShortFragment.id == fragment_id).first()
+        if fragment:
+            fragment.status = "error"
+            db.commit()
+        return {"status": "failed", "error": str(e)}
     finally:
         db.close()

@@ -2,12 +2,14 @@ import os
 import re
 import uuid
 
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 
 from database import SessionLocal, ShortFragment, Transcript, VideoTask, init_db
-from worker import process_video
+from worker import process_video, render_fragment_video
 
 app = FastAPI(title="AI Shorts Maker API")
 
@@ -205,6 +207,7 @@ def adjust_fragment_timecodes(fragment_id: int, data: AdjustFragmentRequest):
         fragment.status = "retrim_pending"
         db.commit()
         db.refresh(fragment)
+        render_fragment_video.delay( fragment_id=fragment.id, start_sec=fragment.adjusted_start_time, end_sec=fragment.adjusted_end_time,)
 
         return {
             "id": fragment.id,
@@ -252,3 +255,26 @@ def get_fragment_detail(fragment_id: int):
     finally:
         db.close()
 
+MEDIA_DIR = Path(os.getenv("SHARED_MEDIA_DIR", "/shared/media"))
+
+@app.get("/media/clips/{filename}", tags=["Media Delivery"])
+def stream_video_clip(filename: str):
+    """Стриминг MP4-видеопотока для вертикального плеера 9:16"""
+    file_path = MEDIA_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Клип еще рендерится или не найден")
+    return FileResponse(path=str(file_path), media_type="video/mp4")
+
+
+@app.get("/api/v1/fragments/{fragment_id}/download", tags=["Media Delivery"])
+def download_fragment(fragment_id: int):
+    """Прямое скачивание готового MP4 файла клипа"""
+    filename = f"fragment_{fragment_id}.mp4"
+    file_path = MEDIA_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Файл клипа не найден")
+    return FileResponse(
+        path=str(file_path),
+        media_type="video/mp4",
+        filename=f"shorts_{fragment_id}.mp4",
+    )
