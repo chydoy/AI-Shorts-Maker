@@ -68,6 +68,14 @@ def process_video(self, task_id: int, youtube_url: str):
                 duration=float(item.get("duration", round(item["end_time"] - item["start_time"], 2))),
                 reasoning=item.get("reasoning", ""),
                 summary=item.get("summary", ""),
+                virality_score=int(item.get("virality_score", 80)),
+                hook_reason=item.get("hook_reason", item.get("reasoning", "")),
+                internal_criticism=item.get("internal_criticism", ""),
+                first_words=item.get("first_words", ""),
+                last_words=item.get("last_words", ""),
+                adjusted_start_time=None,
+                adjusted_end_time=None,
+                status="ready",
             )
             db.add(fragment)
 

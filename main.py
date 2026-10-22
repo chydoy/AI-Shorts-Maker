@@ -14,9 +14,10 @@ app = FastAPI(title="AI Shorts Maker API")
 # The browser frontend runs on localhost:3000 while FastAPI runs on localhost:8000.
 # Keep the allowed origin configurable for deployment.
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
+allowed_origins = list({FRONTEND_ORIGIN, "http://localhost:3000", "http://127.0.0.1:3000"})
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,6 +26,11 @@ app.add_middleware(
 
 class ProcessRequest(BaseModel):
     youtube_url: HttpUrl
+
+
+class AdjustFragmentRequest(BaseModel):
+    adjusted_start_time: float
+    adjusted_end_time: float
 
 
 @app.on_event("startup")
@@ -139,12 +145,109 @@ def get_task_fragments(task_id: int):
                     "title": f.title,
                     "start_time": f.start_time,
                     "end_time": f.end_time,
+                    "adjusted_start_time": f.adjusted_start_time,
+                    "adjusted_end_time": f.adjusted_end_time,
                     "duration": f.duration,
+                    "virality_score": f.virality_score,
+                    "hook_reason": f.hook_reason,
+                    "internal_criticism": f.internal_criticism,
+                    "first_words": f.first_words,
+                    "last_words": f.last_words,
                     "reasoning": f.reasoning,
                     "summary": f.summary,
+                    "video_path": f.video_path,
+                    "status": f.status,
                 }
                 for f in fragments
             ],
+        }
+    finally:
+        db.close()
+
+
+@app.patch("/api/v1/fragments/{fragment_id}/adjust")
+def adjust_fragment_timecodes(fragment_id: int, data: AdjustFragmentRequest):
+    """Adjust fragment start/end timecodes in milliseconds/seconds (US 7)."""
+    db = SessionLocal()
+    try:
+        fragment = db.get(ShortFragment, fragment_id)
+        if fragment is None:
+            raise HTTPException(status_code=404, detail="Fragment not found")
+
+        if data.adjusted_start_time < 0.0:
+            raise HTTPException(
+                status_code=422,
+                detail="Время начала фрагмента не может быть отрицательным",
+            )
+
+        if data.adjusted_end_time <= data.adjusted_start_time:
+            raise HTTPException(
+                status_code=422,
+                detail="Конец фрагмента должен быть позже начала",
+            )
+
+        duration = data.adjusted_end_time - data.adjusted_start_time
+        if duration < 5.0:
+            raise HTTPException(
+                status_code=422,
+                detail="Длительность Shorts должна составлять не менее 5 секунд",
+            )
+
+        if duration > 65.0:
+            raise HTTPException(
+                status_code=422,
+                detail="Длительность Shorts не может превышать 60 секунд",
+            )
+
+        fragment.adjusted_start_time = round(data.adjusted_start_time, 3)
+        fragment.adjusted_end_time = round(data.adjusted_end_time, 3)
+        fragment.duration = round(duration, 3)
+        fragment.status = "retrim_pending"
+        db.commit()
+        db.refresh(fragment)
+
+        return {
+            "id": fragment.id,
+            "task_id": fragment.task_id,
+            "title": fragment.title,
+            "start_time": fragment.start_time,
+            "end_time": fragment.end_time,
+            "adjusted_start_time": fragment.adjusted_start_time,
+            "adjusted_end_time": fragment.adjusted_end_time,
+            "duration": fragment.duration,
+            "status": fragment.status,
+            "message": "Таймкоды успешно скорректированы, отправлено на повторную нарезку",
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/v1/fragments/{fragment_id}")
+def get_fragment_detail(fragment_id: int):
+    """Get single fragment details with full LLM analytics and virality score."""
+    db = SessionLocal()
+    try:
+        fragment = db.get(ShortFragment, fragment_id)
+        if fragment is None:
+            raise HTTPException(status_code=404, detail="Fragment not found")
+
+        return {
+            "id": fragment.id,
+            "task_id": fragment.task_id,
+            "title": fragment.title,
+            "start_time": fragment.start_time,
+            "end_time": fragment.end_time,
+            "adjusted_start_time": fragment.adjusted_start_time,
+            "adjusted_end_time": fragment.adjusted_end_time,
+            "duration": fragment.duration,
+            "virality_score": fragment.virality_score,
+            "hook_reason": fragment.hook_reason,
+            "internal_criticism": fragment.internal_criticism,
+            "first_words": fragment.first_words,
+            "last_words": fragment.last_words,
+            "summary": fragment.summary,
+            "video_path": fragment.video_path,
+            "status": fragment.status,
         }
     finally:
         db.close()

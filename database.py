@@ -1,5 +1,6 @@
 import datetime
 import os
+import time
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -47,10 +48,19 @@ class ShortFragment(Base):
     duration = Column(Float, nullable=False)
     reasoning = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
+    
+    # Поля Спринта 2 (Александр Беляев / US 2, US 3, US 7)
+    virality_score = Column(Integer, default=0, nullable=False)
+    hook_reason = Column(Text, nullable=True)
+    internal_criticism = Column(Text, nullable=True)
+    first_words = Column(String, nullable=True)
+    last_words = Column(String, nullable=True)
+    adjusted_start_time = Column(Float, nullable=True)
+    adjusted_end_time = Column(Float, nullable=True)
+    video_path = Column(String, nullable=True)
+    status = Column(String, default="ready", nullable=False)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-
-import time
 
 
 def init_db(retries: int = 10, delay: int = 2):
@@ -58,6 +68,31 @@ def init_db(retries: int = 10, delay: int = 2):
     for attempt in range(1, retries + 1):
         try:
             Base.metadata.create_all(bind=engine)
+            # Automatic safe migration for new Sprint 2 columns if tables already existed
+            with engine.connect() as conn:
+                new_columns = [
+                    ("virality_score", "INTEGER DEFAULT 0"),
+                    ("hook_reason", "TEXT"),
+                    ("internal_criticism", "TEXT"),
+                    ("first_words", "VARCHAR"),
+                    ("last_words", "VARCHAR"),
+                    ("adjusted_start_time", "FLOAT"),
+                    ("adjusted_end_time", "FLOAT"),
+                    ("video_path", "VARCHAR"),
+                    ("status", "VARCHAR DEFAULT 'ready'"),
+                ]
+                for col_name, col_type in new_columns:
+                    try:
+                        if engine.dialect.name == "sqlite":
+                            res = conn.exec_driver_sql("PRAGMA table_info(short_fragments)").fetchall()
+                            existing_cols = [r[1] for r in res]
+                            if col_name not in existing_cols:
+                                conn.exec_driver_sql(f"ALTER TABLE short_fragments ADD COLUMN {col_name} {col_type}")
+                        else:
+                            conn.exec_driver_sql(f"ALTER TABLE short_fragments ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                    except Exception:
+                        pass
+                conn.commit()
             return
         except Exception as exc:
             if attempt < retries:
