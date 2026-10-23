@@ -19,18 +19,32 @@ def download_source_video(youtube_url: str, task_id: int) -> str:
 
     output_template = str(SHARED_MEDIA_DIR / f"{task_id}_source.%(ext)s")
     options = {
-        "format": "bestvideo+bestaudio/best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "outtmpl": output_template,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "merge_output_format": "mp4",
+        "nocheckcertificate": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([youtube_url])
 
     candidates = sorted(SHARED_MEDIA_DIR.glob(f"{task_id}_source.*"))
-    candidates = [path for path in candidates if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"} and not path.name.endswith((".part", ".ytdl"))]
+    candidates = [
+        path for path in candidates
+        if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+        and not path.name.endswith((".part", ".ytdl"))
+    ]
     if not candidates:
         raise FileNotFoundError(f"Исходное видео не было создано для задачи {task_id}")
     # Prefer MP4 when yt-dlp successfully merged video and audio into it.
@@ -78,6 +92,16 @@ def download_audio(youtube_url: str, task_id: int, source_video_path: str | None
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "nocheckcertificate": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
