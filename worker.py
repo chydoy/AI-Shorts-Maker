@@ -3,7 +3,7 @@ import os
 
 from database import SessionLocal, ShortFragment, Transcript, VideoTask
 from llm import find_shorts_moments, save_fragments_json
-from media import download_audio, cut_vertical_clip
+from media import download_audio, download_source_video, source_video_for_task, cut_vertical_clip
 from transcription import save_transcript_json, transcribe_audio
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -46,7 +46,8 @@ def process_video(self, task_id: int, youtube_url: str):
         task.error_message = None
         db.commit()
 
-        audio_path = download_audio(youtube_url, task_id)
+        source_video_path = download_source_video(youtube_url, task_id)
+        audio_path = download_audio(youtube_url, task_id, source_video_path=source_video_path)
 
         # Этап 2: Транскрибация речи Faster-Whisper
         task.status = "transcribing"
@@ -110,9 +111,7 @@ def process_video(self, task_id: int, youtube_url: str):
         db.commit()
 
         total_frags = len(saved_fragments)
-        source_media_dir = os.getenv("SHARED_MEDIA_DIR", "/shared/media")
-        source_candidate = os.path.join(source_media_dir, f"{task_id}.mp4")
-        default_source = source_candidate if os.path.exists(source_candidate) else os.path.join(source_media_dir, "source.mp4")
+        default_source = source_video_path or source_video_for_task(task_id)
 
         for idx, fragment in enumerate(saved_fragments):
             output_filename = f"fragment_{fragment.id}.mp4"
@@ -171,11 +170,8 @@ def render_fragment_video(fragment_id: int, start_sec: float, end_sec: float, so
         if not fragment:
             return {"status": "failed", "error": f"Fragment {fragment_id} not found"}
 
-        source_media_dir = os.getenv("SHARED_MEDIA_DIR", "/shared/media")
-        source_candidate = os.path.join(source_media_dir, f"{fragment.task_id}.mp4")
-        actual_source = source_candidate if os.path.exists(source_candidate) else (
-            source_video if os.path.exists(source_video) else os.path.join(source_media_dir, "source.mp4")
-        )
+        task_source = source_video_for_task(fragment.task_id)
+        actual_source = task_source if os.path.exists(task_source) else source_video
 
         rendered_path = cut_vertical_clip(
             source_path=actual_source,

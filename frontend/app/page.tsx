@@ -18,11 +18,21 @@ type ProcessResponse = {
   status: string;
 };
 
-type TaskResponse = {
-  id: number;
+type TaskStatusResponse = {
+  task_id: number;
   status: string;
   youtube_url: string;
-  fragments_count: number;
+  progress: number;
+  current_step: string;
+  step_label: string;
+  is_completed: boolean;
+  is_failed: boolean;
+  error_message: string | null;
+  stages: Array<{
+    key: string;
+    title: string;
+    status: "pending" | "in_progress" | "completed" | "failed";
+  }>;
 };
 
 type FragmentsResponse = {
@@ -87,6 +97,7 @@ export default function Home() {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [taskStatus, setTaskStatus] = useState<TaskStatusResponse | null>(null);
 
   const statusText = useMemo(() => {
     const labels: Record<string, string> = {
@@ -95,6 +106,7 @@ export default function Home() {
       downloading: "Скачиваем аудиодорожку…",
       transcribing: "Распознаём речь…",
       analyzing: "Ищем лучшие моменты с помощью AI…",
+      cutting: "Создаём вертикальные клипы…",
       completed: "Готово!",
       error: "Обработка завершилась с ошибкой.",
     };
@@ -102,81 +114,73 @@ export default function Home() {
   }, [status]);
 
 useEffect(() => {
-    if (!task?.task_id || status === "completed" || status === "error") {
-      return;
-    }
+    if (!task?.task_id) return;
 
     let cancelled = false;
+    let finished = false;
+    let intervalId: number | undefined;
 
     const poll = async () => {
       try {
         const response = await fetch(
-          `${API_URL}/api/v1/tasks/${task.task_id}`,
+          `${API_URL}/api/v1/tasks/${task.task_id}/status`,
           { cache: "no-store" },
         );
-
         if (!response.ok) throw new Error("Не удалось получить статус задачи.");
 
-        const data: TaskResponse = await response.json();
+        const data: TaskStatusResponse = await response.json();
+        if (cancelled || finished) return;
 
-        if (cancelled) return;
-
+        setTaskStatus(data);
         setSourceUrl(data.youtube_url);
+        setStatus(data.status);
+        setError("");
 
-        if (data.status === "completed") {
+        if (data.is_completed || data.status === "completed") {
           const fragmentsResponse = await fetch(
             `${API_URL}/api/v1/tasks/${task.task_id}/fragments`,
             { cache: "no-store" },
           );
-
           if (!fragmentsResponse.ok) {
-            throw new Error("Не удалось загрузить найденные фрагменты.");
+            throw new Error("Обработка завершена, но не удалось загрузить фрагменты.");
           }
-
-          const fragmentsData: FragmentsResponse =
-            await fragmentsResponse.json();
-
-          if (!cancelled) {
-            // Сохраняем фрагменты и обновляем статус одновременно,
-            // чтобы отмена эффекта не происходила до сохранения данных
-            setFragments(fragmentsData.fragments);
-            setStatus("completed");
-            setLoading(false);
-          }
-        } else if (data.status === "error") {
-          if (!cancelled) {
-            setStatus("error");
-            setError("Celery не смог обработать видео. Проверьте логи worker.");
-            setLoading(false);
-          }
-        } else {
-          if (!cancelled) {
-            setStatus(data.status);
-          }
+          const fragmentsData: FragmentsResponse = await fragmentsResponse.json();
+          if (cancelled) return;
+          setFragments(fragmentsData.fragments);
+          setStatus("completed");
+          setLoading(false);
+          finished = true;
+          if (intervalId !== undefined) window.clearInterval(intervalId);
+        } else if (data.is_failed || data.status === "error") {
+          setError(data.error_message || "Обработка завершилась с ошибкой.");
+          setStatus("error");
+          setLoading(false);
+          finished = true;
+          if (intervalId !== undefined) window.clearInterval(intervalId);
         }
       } catch (err) {
-        if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "Неизвестная ошибка.",
-          );
-          setLoading(false);
+        if (!cancelled && !finished) {
+          setError(err instanceof Error ? err.message : "Неизвестная ошибка.");
         }
       }
     };
 
-    poll();
-    const interval = window.setInterval(poll, 2000);
+    void poll();
+    intervalId = window.setInterval(() => {
+      if (!finished) void poll();
+    }, 2000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (intervalId !== undefined) window.clearInterval(intervalId);
     };
-  }, [task?.task_id, status]);
+  }, [task?.task_id]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setFragments([]);
+    setTaskStatus(null);
 
     if (!isYouTubeUrl(url)) {
       setError("Введите корректную ссылку на YouTube.");
@@ -216,6 +220,7 @@ useEffect(() => {
     setStatus("idle");
     setError("");
     setLoading(false);
+    setTaskStatus(null);
   }
 
   return (
@@ -260,26 +265,80 @@ useEffect(() => {
             </div>
           )}
 
-          {status !== "idle" && !error && (
+          {status !== "idle" && (
             <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="font-semibold">{statusText}</p>
+                  <p className="font-semibold">{taskStatus?.step_label || statusText}</p>
                   {task && (
-                    <p className="mt-1 text-sm text-zinc-500">
-                      Задача #{task.task_id}
-                    </p>
+                    <p className="mt-1 text-sm text-zinc-500">Задача #{task.task_id}</p>
                   )}
                 </div>
-                {loading && (
-                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-violet-400" />
-                )}
+                <span className="font-mono text-sm font-semibold text-violet-300">
+                  {taskStatus?.progress ?? 0}%
+                </span>
               </div>
 
-              {loading && (
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-800">
-                  <div className="h-full w-1/2 animate-pulse rounded-full bg-violet-500" />
-                </div>
+              <div
+                className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-800"
+                role="progressbar"
+                aria-label="Прогресс обработки видео"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={taskStatus?.progress ?? 0}
+              >
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${status === "error" ? "bg-red-500" : status === "completed" ? "bg-emerald-500" : "bg-violet-500"}`}
+                  style={{ width: `${taskStatus?.progress ?? 0}%` }}
+                />
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                {(taskStatus?.stages ?? [
+                  { key: "downloading", title: "Загрузка видео", status: "pending" as const },
+                  { key: "transcribing", title: "Транскрибация речи Faster-Whisper", status: "pending" as const },
+                  { key: "analyzing", title: "Семантический отбор и скоринг LLM", status: "pending" as const },
+                  { key: "cutting", title: "Нарезка вертикального MP4 через FFmpeg", status: "pending" as const },
+                ]).map((stage) => {
+                  const styles = {
+                    pending: "border-zinc-700 bg-zinc-950 text-zinc-500",
+                    in_progress: "border-blue-500/60 bg-blue-950/40 text-blue-200 animate-pulse",
+                    completed: "border-emerald-700/60 bg-emerald-950/30 text-emerald-300",
+                    failed: "border-red-700/70 bg-red-950/40 text-red-300",
+                  };
+                  const icons = {
+                    pending: "○",
+                    in_progress: "◉",
+                    completed: "✓",
+                    failed: "!",
+                  };
+                  const labels = {
+                    pending: "Ожидание",
+                    in_progress: "В работе",
+                    completed: "Готово",
+                    failed: "Ошибка",
+                  };
+                  const stageState = stage.status;
+                  const title = stage.key === "analyzing"
+                    ? "Семантический отбор и скоринг LLM"
+                    : stage.title;
+                  return (
+                    <div key={stage.key} className={`flex items-start gap-3 rounded-xl border p-3 ${styles[stageState]}`}>
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black/20 text-sm font-bold">
+                        {icons[stageState]}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{title}</p>
+                        <p className="mt-1 text-xs opacity-80">{labels[stageState]}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {error && (
+                <p className="mt-4 rounded-xl border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
+                  {error}
+                </p>
               )}
             </div>
           )}

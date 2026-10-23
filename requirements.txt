@@ -9,3 +9,7 @@ yt-dlp[default]>=2025.1.0
 faster-whisper==1.0.3
 openai>=1.14.0
 httpx>=0.27.0
+# Smart Crop: face landmarks and image/video frame processing
+numpy==1.26.4
+opencv-contrib-python==4.10.0.84
+mediapipe==0.10.14

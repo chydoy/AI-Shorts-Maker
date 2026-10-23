@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 
 from database import SessionLocal, ShortFragment, Transcript, VideoTask, init_db
-from media import SHARED_MEDIA_DIR, cut_vertical_clip
+from media import SHARED_MEDIA_DIR, cut_vertical_clip, source_video_for_task
 from worker import process_video, render_fragment_video
 
 app = FastAPI(title="AI Shorts Maker API")
@@ -493,8 +493,7 @@ def stream_video_clip(filename: str):
                 if fragment:
                     start_sec = fragment.adjusted_start_time if fragment.adjusted_start_time is not None else fragment.start_time
                     end_sec = fragment.adjusted_end_time if fragment.adjusted_end_time is not None else fragment.end_time
-                    source_candidate = MEDIA_DIR / f"{fragment.task_id}.mp4"
-                    default_source = str(source_candidate) if source_candidate.exists() else str(MEDIA_DIR / "source.mp4")
+                    default_source = source_video_for_task(fragment.task_id)
                     try:
                         cut_vertical_clip(
                             source_path=default_source,
@@ -529,8 +528,7 @@ def download_fragment(fragment_id: int):
 
             start_sec = fragment.adjusted_start_time if fragment.adjusted_start_time is not None else fragment.start_time
             end_sec = fragment.adjusted_end_time if fragment.adjusted_end_time is not None else fragment.end_time
-            source_candidate = MEDIA_DIR / f"{fragment.task_id}.mp4"
-            default_source = str(source_candidate) if source_candidate.exists() else str(MEDIA_DIR / "source.mp4")
+            default_source = source_video_for_task(fragment.task_id)
             try:
                 cut_vertical_clip(
                     source_path=default_source,
