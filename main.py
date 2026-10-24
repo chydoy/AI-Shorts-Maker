@@ -290,6 +290,9 @@ def get_task(task_id: int):
             "youtube_url": task.youtube_url,
             "fragments_count": len(fragments),
             "progress": progress,
+            "transcription_progress": int(
+                getattr(task, "transcription_progress", 0) or 0
+                ),
             "current_step": current_step,
             "step_label": step_label,
             "error_message": task.error_message,
@@ -343,6 +346,9 @@ def get_task_status(task_id: int):
             "status": task.status,
             "youtube_url": task.youtube_url,
             "progress": progress,
+            "transcription_progress": int(
+                getattr(task, "transcription_progress", 0) or 0
+            ),
             "current_step": current_step,
             "step_label": step_label,
             "is_completed": task.status == "completed",

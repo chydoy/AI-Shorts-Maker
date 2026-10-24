@@ -5,6 +5,7 @@ import time
 from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://postgres:postgres@localhost:5432/ai_shorts_db",
@@ -31,6 +32,7 @@ class VideoTask(Base):
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    transcription_progress = Column(Integer, default=0, nullable=False)
 
 
 class Transcript(Base):
@@ -83,6 +85,7 @@ def init_db(retries: int = 10, delay: int = 2):
                     ("current_step", "VARCHAR DEFAULT 'pending'"),
                     ("error_message", "TEXT"),
                     ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("transcription_progress", "INTEGER NOT NULL DEFAULT 0"),
                 ]
                 for col_name, col_type in task_columns:
                     try:

@@ -14,6 +14,7 @@ type TaskStatusResponse = {
   status: string;
   youtube_url: string;
   progress: number;
+  transcription_progress: number;
   current_step: string;
   step_label: string;
   is_completed: boolean;
@@ -82,6 +83,7 @@ export default function Home() {
   const [status, setStatus] = useState("idle");
   const [stepLabel, setStepLabel] = useState("");
   const [progress, setProgress] = useState(0);
+  const [transcriptionProgress, setTranscriptionProgress] = useState(0);
   const [stages, setStages] = useState<StageItem[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -108,6 +110,7 @@ export default function Home() {
 
         setSourceUrl(data.youtube_url);
         setProgress(data.progress ?? 0);
+        setTranscriptionProgress(data.transcription_progress ?? 0);
         setStepLabel(data.step_label ?? data.status);
         if (data.stages) setStages(data.stages);
 
@@ -158,6 +161,7 @@ export default function Home() {
     setError("");
     setFragments([]);
     setProgress(0);
+    setTranscriptionProgress(0);
     setStages([]);
 
     if (!isYouTubeUrl(url)) {
@@ -199,6 +203,7 @@ export default function Home() {
     setStatus("idle");
     setStepLabel("");
     setProgress(0);
+    setTranscriptionProgress(0);
     setStages([]);
     setError("");
     setLoading(false);
@@ -275,6 +280,25 @@ export default function Home() {
                   style={{ width: `${Math.min(100, Math.max(progress, 3))}%` }}
                 />
               </div>
+              {status === "transcribing" && (
+              <div className="mt-5">
+                <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                  <span className="text-zinc-300">Распознавание речи (Whisper)</span>
+                  <span className="font-mono font-semibold text-violet-400">
+                    {transcriptionProgress}%
+                  </span>
+                </div>
+
+                <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, transcriptionProgress))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
               {/* 4 стадии пайплайна */}
               {stages.length > 0 && (
