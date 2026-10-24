@@ -50,11 +50,22 @@ export function FragmentCard({
     return "bg-zinc-500/10 text-zinc-400 border-zinc-700";
   };
 
+  // Резолв абсолютных URL к бэкенду (порт 8000)
+  const resolveBackendUrl = (url?: string) => {
+    if (!url) return undefined;
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+    const cleanBase = apiUrl.replace(/\/+$/, "");
+    const cleanPath = url.startsWith("/") ? url : `/${url}`;
+    return `${cleanBase}${cleanPath}`;
+  };
+
+  const videoSrc = resolveBackendUrl(fragment.stream_url);
+
   const handleDownload = async () => {
     setIsDownloading(true);
     try {
-      const url =
-        fragment.download_url ?? `${apiUrl}/api/v1/fragments/${fragment.id}/download`;
+      const defaultDownloadPath = `/api/v1/fragments/${fragment.id}/download`;
+      const url = resolveBackendUrl(fragment.download_url) ?? resolveBackendUrl(defaultDownloadPath)!;
 
       const link = document.createElement("a");
       link.href = url;
@@ -99,7 +110,7 @@ export function FragmentCard({
 
         <div className="my-4">
           <VideoPlayer
-            streamUrl={fragment.stream_url}
+            streamUrl={videoSrc}
             previewUrl={youtubePreviewUrl(sourceUrl, currentStart)}
             title={fragment.title}
           />

@@ -1,44 +1,38 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { FragmentCard, FragmentData } from "../components/FragmentCard";
 
-type Fragment = {
-  id: number;
+type StageItem = {
+  key: string;
   title: string;
-  start_time: number;
-  end_time: number;
-  duration: number;
-  reasoning?: string;
-  summary?: string;
-  virality_score?: number;
-  hook_reason?: string;
-  internal_criticism?: string;
-  first_words?: string;
-  last_words?: string;
-  stream_url?: string;
-  download_url?: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+};
+
+type TaskStatusResponse = {
+  task_id: number;
+  status: string;
+  youtube_url: string;
+  progress: number;
+  current_step: string;
+  step_label: string;
+  is_completed: boolean;
+  is_failed: boolean;
+  error_message?: string;
+  stages: StageItem[];
+  clips_summary?: {
+    total: number;
+    ready: number;
+    pending: number;
+    error: number;
+  };
+  clips?: FragmentData[];
 };
 
 type ProcessResponse = {
   task_id: number;
   celery_task_id: string;
   status: string;
-};
-
-type TaskResponse = {
-  id: number;
-  status: string;
-  youtube_url: string;
-  fragments_count: number;
-};
-
-type FragmentsResponse = {
-  task_id: number;
-  status: string;
-  youtube_url: string;
-  count: number;
-  fragments: Fragment[];
 };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -83,24 +77,14 @@ function youtubePreviewUrl(sourceUrl: string, startTime: number): string {
 export default function Home() {
   const [url, setUrl] = useState("");
   const [task, setTask] = useState<ProcessResponse | null>(null);
-  const [fragments, setFragments] = useState<Fragment[]>([]);
+  const [fragments, setFragments] = useState<FragmentData[]>([]);
   const [sourceUrl, setSourceUrl] = useState("");
   const [status, setStatus] = useState("idle");
+  const [stepLabel, setStepLabel] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [stages, setStages] = useState<StageItem[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const statusText = useMemo(() => {
-    const labels: Record<string, string> = {
-      idle: "",
-      pending: "Задача поставлена в очередь…",
-      downloading: "Скачиваем аудиодорожку…",
-      transcribing: "Распознаём речь…",
-      analyzing: "Ищем лучшие моменты с помощью AI…",
-      completed: "Готово!",
-      error: "Обработка завершилась с ошибкой.",
-    };
-    return labels[status] ?? status;
-  }, [status]);
 
   useEffect(() => {
     if (!task?.task_id || status === "completed" || status === "error") {
@@ -112,52 +96,49 @@ export default function Home() {
     const poll = async () => {
       try {
         const response = await fetch(
-          `${API_URL}/api/v1/tasks/${task.task_id}`,
+          `${API_URL}/api/v1/tasks/${task.task_id}/status`,
           { cache: "no-store" },
         );
 
         if (!response.ok) throw new Error("Не удалось получить статус задачи.");
 
-        const data: TaskResponse = await response.json();
+        const data: TaskStatusResponse = await response.json();
 
         if (cancelled) return;
 
         setSourceUrl(data.youtube_url);
+        setProgress(data.progress ?? 0);
+        setStepLabel(data.step_label ?? data.status);
+        if (data.stages) setStages(data.stages);
 
-        if (data.status === "completed") {
-          const fragmentsResponse = await fetch(
-            `${API_URL}/api/v1/tasks/${task.task_id}/fragments`,
-            { cache: "no-store" },
-          );
-
-          if (!fragmentsResponse.ok) {
-            throw new Error("Не удалось загрузить найденные фрагменты.");
+        if (data.is_completed || data.status === "completed") {
+          // Если клипы уже пришли в status эндпоинте:
+          if (data.clips && data.clips.length > 0) {
+            setFragments(data.clips);
+          } else {
+            // Фолбэк на /fragments
+            const fragmentsRes = await fetch(
+              `${API_URL}/api/v1/tasks/${task.task_id}/fragments`,
+              { cache: "no-store" },
+            );
+            if (fragmentsRes.ok) {
+              const fData = await fragmentsRes.json();
+              setFragments(fData.fragments ?? []);
+            }
           }
-
-          const fragmentsData: FragmentsResponse =
-            await fragmentsResponse.json();
-
-          if (!cancelled) {
-            setFragments(fragmentsData.fragments);
-            setStatus("completed");
-            setLoading(false);
-          }
-        } else if (data.status === "error") {
-          if (!cancelled) {
-            setStatus("error");
-            setError("Celery не смог обработать видео. Проверьте логи worker.");
-            setLoading(false);
-          }
+          setStatus("completed");
+          setProgress(100);
+          setLoading(false);
+        } else if (data.is_failed || data.status === "error") {
+          setStatus("error");
+          setError(data.error_message || "Celery не смог обработать видео. Проверьте логи worker.");
+          setLoading(false);
         } else {
-          if (!cancelled) {
-            setStatus(data.status);
-          }
+          setStatus(data.status);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "Неизвестная ошибка.",
-          );
+          setError(err instanceof Error ? err.message : "Неизвестная ошибка.");
           setLoading(false);
         }
       }
@@ -176,6 +157,8 @@ export default function Home() {
     event.preventDefault();
     setError("");
     setFragments([]);
+    setProgress(0);
+    setStages([]);
 
     if (!isYouTubeUrl(url)) {
       setError("Введите корректную ссылку на YouTube.");
@@ -184,6 +167,7 @@ export default function Home() {
 
     setLoading(true);
     setStatus("pending");
+    setStepLabel("Инициализация задачи...");
 
     try {
       const response = await fetch(`${API_URL}/api/v1/process`, {
@@ -213,6 +197,9 @@ export default function Home() {
     setFragments([]);
     setSourceUrl("");
     setStatus("idle");
+    setStepLabel("");
+    setProgress(0);
+    setStages([]);
     setError("");
     setLoading(false);
   }
@@ -229,8 +216,8 @@ export default function Home() {
             <span className="block text-violet-400">из YouTube-видео</span>
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-zinc-400">
-            Вставь ссылку — система скачает аудио, расшифрует речь и с помощью
-            AI предложит фрагменты до 60 секунд.
+            Вставь ссылку — система скачает видео, распознает речь, отберёт
+            хайповые моменты через LLM и нарежет клипы 9:16.
           </p>
         </header>
 
@@ -259,25 +246,67 @@ export default function Home() {
             </div>
           )}
 
+          {/* КАРТОЧКА 10 (Влад): Прогресс-бар 0–100% и 4 стадии */}
           {status !== "idle" && !error && (
-            <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
-              <div className="flex items-center justify-between gap-4">
+            <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+              <div className="flex items-center justify-between gap-4 mb-3">
                 <div>
-                  <p className="font-semibold">{statusText}</p>
+                  <p className="font-semibold text-white">{stepLabel || "Обработка..."}</p>
                   {task && (
-                    <p className="mt-1 text-sm text-zinc-500">
+                    <p className="mt-0.5 text-xs text-zinc-500">
                       Задача #{task.task_id}
                     </p>
                   )}
                 </div>
-                {loading && (
-                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-violet-400" />
-                )}
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-sm font-bold text-violet-400">
+                    {progress}%
+                  </span>
+                  {loading && (
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-violet-400" />
+                  )}
+                </div>
               </div>
 
-              {loading && (
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-800">
-                  <div className="h-full w-1/2 animate-pulse rounded-full bg-violet-500" />
+              {/* Шкала 0-100% */}
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full bg-violet-500 transition-all duration-500 ease-out"
+                  style={{ width: `${Math.min(100, Math.max(progress, 3))}%` }}
+                />
+              </div>
+
+              {/* 4 стадии пайплайна */}
+              {stages.length > 0 && (
+                <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {stages.map((st) => {
+                    const isDone = st.status === "completed";
+                    const isCurr = st.status === "in_progress";
+                    const isFail = st.status === "failed";
+
+                    return (
+                      <div
+                        key={st.key}
+                        className={`rounded-xl border p-3 text-xs transition ${
+                          isDone
+                            ? "border-emerald-500/30 bg-emerald-950/10 text-emerald-300"
+                            : isCurr
+                            ? "border-violet-500/50 bg-violet-950/20 text-violet-200 ring-1 ring-violet-500/30"
+                            : isFail
+                            ? "border-red-500/30 bg-red-950/20 text-red-300"
+                            : "border-zinc-800 bg-zinc-950/40 text-zinc-500"
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 font-medium">
+                          {isDone && <span>✓</span>}
+                          {isCurr && <span className="animate-pulse">●</span>}
+                          {isFail && <span>✕</span>}
+                          {!isDone && !isCurr && !isFail && <span>○</span>}
+                          <span className="truncate">{st.title}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -310,7 +339,7 @@ export default function Home() {
                 {fragments.map((fragment, index) => (
                   <FragmentCard
                     key={fragment.id}
-                    fragment={fragment as unknown as FragmentData}
+                    fragment={fragment}
                     index={index}
                     sourceUrl={sourceUrl}
                     apiUrl={API_URL}
