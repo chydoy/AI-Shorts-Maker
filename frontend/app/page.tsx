@@ -2,7 +2,6 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { FragmentCard, FragmentData } from "../components/FragmentCard";
-import { EditingStudioModal } from "../components/EditingStudioModal";
 
 type StageItem = {
   key: string;
@@ -89,7 +88,6 @@ export default function Home() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"top" | "archive">("top");
-  const [editingFragment, setEditingFragment] = useState<FragmentData | null>(null);
 
   useEffect(() => {
     if (!task?.task_id || status === "completed" || status === "error") {
@@ -211,7 +209,6 @@ export default function Home() {
     setError("");
     setLoading(false);
     setActiveTab("top");
-    setEditingFragment(null);
   }
 
   return (
@@ -463,7 +460,6 @@ export default function Home() {
                           sourceUrl={sourceUrl}
                           apiUrl={API_URL}
                           youtubePreviewUrl={youtubePreviewUrl}
-                          onOpenStudio={(f) => setEditingFragment(f)}
                         />
                       ))}
                     </div>
@@ -474,40 +470,6 @@ export default function Home() {
           </section>
         )}
 
-        {/* Полноэкранный режим: отдельный экран студии редактирования */}
-        {editingFragment && (
-          <EditingStudioModal
-            fragment={editingFragment}
-            sourceUrl={sourceUrl}
-            apiUrl={API_URL}
-            youtubePreviewUrl={youtubePreviewUrl}
-            onClose={() => setEditingFragment(null)}
-            onSaved={(fragmentId, newStart, newEnd) => {
-              setFragments((prev) =>
-                prev.map((f) =>
-                  f.id === fragmentId
-                    ? {
-                        ...f,
-                        start_time: newStart,
-                        end_time: newEnd,
-                        duration: +(newEnd - newStart).toFixed(1),
-                      }
-                    : f
-                )
-              );
-              setEditingFragment((prev) =>
-                prev && prev.id === fragmentId
-                  ? {
-                      ...prev,
-                      start_time: newStart,
-                      end_time: newEnd,
-                      duration: +(newEnd - newStart).toFixed(1),
-                    }
-                  : prev
-              );
-            }}
-          />
-        )}
       </div>
     </main>
   );
