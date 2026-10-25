@@ -172,6 +172,56 @@ class TestCard1ViralityPromptAndScoring(unittest.TestCase):
         content = llm_file.read_text(encoding="utf-8")
         self.assertNotIn("\u2014", content, "В llm.py обнаружено запрещенное длинное тире")
 
+    def test_has_sentence_end_punctuation_ellipsis_and_quotes(self):
+        """Проверка распознавания многоточия (включая unicode \u2026) и кавычек как знаков завершения."""
+        from llm import _has_sentence_end_punctuation
+        self.assertTrue(_has_sentence_end_punctuation("финал..."))
+        self.assertTrue(_has_sentence_end_punctuation("вывод…"))
+        self.assertTrue(_has_sentence_end_punctuation("панчлайн!"))
+        self.assertTrue(_has_sentence_end_punctuation("вопрос?"))
+        self.assertTrue(_has_sentence_end_punctuation("цитата.»"))
+        self.assertFalse(_has_sentence_end_punctuation("потому"))
+        self.assertFalse(_has_sentence_end_punctuation("если"))
+
+    def test_quote_matching_directional_and_ngram(self):
+        """Проверка подвыборки n-грамм при неполном совпадении цитаты без ложного срабатывания на предлоги."""
+        from llm import _find_words_by_quote
+        words = [
+            {"word": "и", "start": 10.0, "end": 10.1},
+            {"word": "это", "start": 10.15, "end": 10.4},
+            {"word": "чистый", "start": 10.45, "end": 10.8},
+            {"word": "дофамин.", "start": 10.85, "end": 11.3},
+        ]
+        # LLM процитировал 'это настоящий чистый дофамин' (слово 'настоящий' отсутствует в Whisper)
+        # Для финиша prefer_end=True должно найти 'дофамин.', а не предлог 'и'
+        indices = _find_words_by_quote("это настоящий чистый дофамин", words, target_time=11.0, prefer_end=True)
+        self.assertIn(3, indices)
+        self.assertEqual(words[indices[-1]]["word"], "дофамин.")
+
+    def test_punctuation_lookahead_with_speech_pause(self):
+        """Проверка дотягивания до знаков препинания с остановкой на естественной паузе речи."""
+        words = [
+            {"word": "Это", "start": 1.0, "end": 1.3},
+            {"word": "первая", "start": 1.35, "end": 1.7},
+            {"word": "мысль", "start": 1.75, "end": 2.1},  # Без знака препинания
+            # Пауза более 1.5 сек (спикер замолчал)
+            {"word": "А", "start": 4.0, "end": 4.2},
+            {"word": "это", "start": 4.25, "end": 4.5},
+            {"word": "другая", "start": 4.55, "end": 4.9},
+            {"word": "тема.", "start": 4.95, "end": 5.4},
+        ]
+        frags = [{
+            "title": "Фрагмент 1",
+            "start_time": 1.0,
+            "end_time": 2.1,
+            "first_words": "Это первая",
+            "last_words": "первая мысль",
+        }]
+        aligned = _align_fragments_to_words(frags, words)
+        self.assertEqual(len(aligned), 1)
+        # Граница не должна перепрыгивать через паузу в 1.9 сек в чужую тему
+        self.assertLess(aligned[0]["end_time"], 3.0)
+
 
 class TestCard9PipelinePolling(unittest.TestCase):
     """Тесты Карточки 9: Опрос статусов этапов обработки видео через REST API / Polling."""

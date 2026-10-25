@@ -125,6 +125,55 @@ class SmartCropTests(unittest.TestCase):
         # Говорящий спикер на x=0.25: 0.25 * 1920 - 303.75 = 176.25
         self.assertAlmostEqual(chosen_x, 176.25, places=1)
 
+    def test_detect_scene_cut_luminance_black_to_white(self):
+        """Проверка детекции смены плана при резкой смене освещенности и яркости (черный vs белый кадр)."""
+        frame_black = np.zeros((200, 200, 3), dtype=np.uint8)
+        frame_white = np.full((200, 200, 3), 255, dtype=np.uint8)
+
+        is_cut, score = detect_scene_cut_histogram(frame_black, frame_white, threshold=0.55)
+        self.assertTrue(is_cut, "Смена черного кадра на белый обязана определяться как смена плана")
+        self.assertLess(score, 0.55)
+
+    def test_step_x_expression_preserves_dominant_coordinate(self):
+        """При объединении короткого плана с длинным сохраняется координата доминирующего плана."""
+        # 1-секундный план на x=100 и 25-секундный план на x=800
+        scenes = [
+            (0.0, 1.0, 100.0),
+            (1.0, 26.0, 800.0),
+            (26.0, 28.0, 200.0),
+            (28.0, 60.0, 850.0),
+            (60.0, 61.0, 120.0),
+        ]
+        expr = _make_step_x_expression(scenes, max_filter_length=150)
+        filter_str = f"crop=w=ih*9/16:h=ih:x='{expr}':y=0,scale=1080:1920"
+
+        self.assertLessEqual(len(filter_str), 150)
+        # Координата 800 обязана остаться, а не замениться на 100
+        self.assertIn("800", expr)
+
+    def test_step_x_expression_handles_shortest_last_segment(self):
+        """Короткий фрагмент в самом конце видео корректно объединяется с предыдущим планом."""
+        scenes = [
+            (0.0, 20.0, 300.0),
+            (20.0, 40.0, 700.0),
+            (40.0, 59.5, 450.0),
+            (59.5, 60.0, 100.0),  # Самый короткий фрагмент (0.5 сек) в конце
+        ]
+        expr = _make_step_x_expression(scenes, max_filter_length=150)
+        filter_str = f"crop=w=ih*9/16:h=ih:x='{expr}':y=0,scale=1080:1920"
+
+        self.assertLessEqual(len(filter_str), 150)
+        # План 450 доминирует над 0.5-секундным планом 100
+        self.assertIn("450", expr)
+
+    def test_step_x_expression_length_guarantee_with_ten_cuts(self):
+        """Гарантия длины фильтра до 150 символов даже при 10 частых монтажных склейках."""
+        scenes = [(float(i * 3), float((i + 1) * 3), float(100 + i * 50)) for i in range(10)]
+        expr = _make_step_x_expression(scenes, max_filter_length=150)
+        filter_str = f"crop=w=ih*9/16:h=ih:x='{expr}':y=0,scale=1080:1920"
+
+        self.assertLessEqual(len(filter_str), 150)
+
 
 if __name__ == "__main__":
     unittest.main()

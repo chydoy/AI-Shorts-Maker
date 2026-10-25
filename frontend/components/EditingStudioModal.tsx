@@ -229,7 +229,7 @@ export function EditingStudioModal({
 
                 <input
                   type="range"
-                  min={Math.max(0, fragment.start_time - 15)}
+                  min={Math.max(0, Math.min(start - 10, fragment.start_time - 30))}
                   max={Math.max(0.1, end - 1)}
                   step={0.1}
                   value={start}
@@ -279,7 +279,7 @@ export function EditingStudioModal({
                 <input
                   type="range"
                   min={start + 1}
-                  max={fragment.end_time + 20}
+                  max={Math.max(end + 10, fragment.end_time + 30)}
                   step={0.1}
                   value={end}
                   onChange={(e) => setEnd(+parseFloat(e.target.value).toFixed(1))}

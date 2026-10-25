@@ -64,6 +64,7 @@ def detect_scene_cut_histogram(prev_frame, curr_frame, threshold: float = 0.55) 
     """Detect if a scene cut occurred between two frames using OpenCV HSV histogram correlation.
 
     Returns (is_cut, correlation_score). Lower correlation indicates a scene transition.
+    Includes all 3 HSV channels (Hue, Saturation, Value) to reliably detect color and luminance changes.
     """
     import cv2
 
@@ -73,13 +74,16 @@ def detect_scene_cut_histogram(prev_frame, curr_frame, threshold: float = 0.55) 
     prev_hsv = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2HSV)
     curr_hsv = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2HSV)
 
-    hist_prev = cv2.calcHist([prev_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
-    hist_curr = cv2.calcHist([curr_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+    # 3D HSV histogram across Hue (0-180), Saturation (0-256), and Value (0-256)
+    hist_prev = cv2.calcHist([prev_hsv], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
+    hist_curr = cv2.calcHist([curr_hsv], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
 
     cv2.normalize(hist_prev, hist_prev, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
     cv2.normalize(hist_curr, hist_curr, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
 
     score = float(cv2.compareHist(hist_prev, hist_curr, cv2.HISTCMP_CORREL))
+    if math.isnan(score):
+        score = 0.0
     is_cut = score < threshold
     return is_cut, score
 
@@ -143,7 +147,7 @@ def _tracks_and_scenes_from_video(
             # Scene Cut Detection via HSV histogram correlation
             if prev_frame is not None:
                 is_cut, _ = detect_scene_cut_histogram(prev_frame, frame, threshold=hist_threshold)
-                if is_cut and (rel_t - current_scene_start) >= 1.0:
+                if is_cut and (rel_t - current_scene_start) >= 0.5:
                     scenes.append({
                         "start_t": current_scene_start,
                         "end_t": rel_t,
@@ -285,10 +289,11 @@ def _ema(values: list[float], alpha: float = 0.35) -> list[float]:
     return smoothed
 
 
-def _make_step_x_expression(scene_segments: list[tuple[float, float, float]]) -> str:
+def _make_step_x_expression(scene_segments: list[tuple[float, float, float]], max_filter_length: int = 150) -> str:
     """Create a compact step FFmpeg x expression for scene cuts without recursive bloat.
 
     Guarantees the overall filter remains compact (length up to 150 characters).
+    When merging adjacent plans to fit the budget, retains the coordinate of the dominant (longer) segment.
     """
     if not scene_segments:
         return "(iw-ih*9/16)/2"
@@ -301,24 +306,54 @@ def _make_step_x_expression(scene_segments: list[tuple[float, float, float]]) ->
         else:
             merged.append((t_start, t_end, x_int))
 
-    # Keep at most 3 scene cut transitions to strictly guarantee filter <= 150 chars
-    while len(merged) > 3:
-        shortest_idx = min(range(len(merged) - 1), key=lambda i: (merged[i][1] - merged[i][0]))
-        t0, _, x0 = merged[shortest_idx]
-        _, t2, _ = merged[shortest_idx + 1]
-        merged[shortest_idx] = (t0, t2, x0)
-        del merged[shortest_idx + 1]
+    def _render(segments: list[tuple[float, float, int]]) -> str:
+        if not segments:
+            return "(iw-ih*9/16)/2"
+        if len(segments) == 1:
+            return str(segments[0][2])
+        expr_str = str(segments[-1][2])
+        for i in range(len(segments) - 2, -1, -1):
+            cut_t = _ffmpeg_number(segments[i][1])
+            x_val = segments[i][2]
+            expr_str = f"if(lt(t\\,{cut_t})\\,{x_val}\\,{expr_str})"
+        return expr_str
 
-    if len(merged) == 1:
-        return str(merged[0][2])
+    prefix_len = len("crop=w=ih*9/16:h=ih:x='':y=0,scale=1080:1920")
 
-    expr = str(merged[-1][2])
-    for i in range(len(merged) - 2, -1, -1):
-        cut_t = _ffmpeg_number(merged[i][1])
-        x_val = merged[i][2]
-        expr = f"if(lt(t\\,{cut_t})\\,{x_val}\\,{expr})"
+    # Merge shortest segments until expression fits within max_filter_length
+    while len(merged) > 1:
+        expr = _render(merged)
+        if len(expr) + prefix_len <= max_filter_length and len(merged) <= 4:
+            break
 
-    return expr
+        # Find shortest segment across ALL segments (including the last one)
+        shortest_idx = min(range(len(merged)), key=lambda i: (merged[i][1] - merged[i][0]))
+
+        if shortest_idx == len(merged) - 1:
+            merge_left = shortest_idx - 1
+            merge_right = shortest_idx
+        elif shortest_idx == 0:
+            merge_left = 0
+            merge_right = 1
+        else:
+            dur_left = merged[shortest_idx - 1][1] - merged[shortest_idx - 1][0]
+            dur_right = merged[shortest_idx + 1][1] - merged[shortest_idx + 1][0]
+            if dur_left <= dur_right:
+                merge_left = shortest_idx - 1
+                merge_right = shortest_idx
+            else:
+                merge_left = shortest_idx
+                merge_right = shortest_idx + 1
+
+        t0, t1, x0 = merged[merge_left]
+        _, t2, x1 = merged[merge_right]
+        d0 = max(0.001, t1 - t0)
+        d1 = max(0.001, t2 - t1)
+        x_dom = x0 if d0 >= d1 else x1
+        merged[merge_left] = (t0, t2, x_dom)
+        del merged[merge_right]
+
+    return _render(merged)
 
 
 def _make_x_expression(points: list[tuple[float, float]]) -> str:

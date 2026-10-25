@@ -256,13 +256,25 @@ def _normalize_token(text: str) -> str:
 
 
 def _has_sentence_end_punctuation(word_str: str) -> bool:
-    """Check if word string ends with terminal punctuation (. ! ?)."""
+    """Check if word string ends with terminal punctuation (. ! ? …)."""
     clean = word_str.strip()
-    return any(clean.endswith(p) for p in [".", "!", "?", "...", "»", "”"])
+    return any(clean.endswith(p) for p in [".", "!", "?", "...", "…", "»", "”", '"', "“", ".'", "!'", "?'"])
 
 
-def _find_words_by_quote(quote: str, words: list[dict], target_time: float, search_window: float = 6.0) -> list[int]:
-    """Find indices in words matching the token sequence of quote near target_time."""
+def _find_words_by_quote(
+    quote: str,
+    words: list[dict],
+    target_time: float,
+    search_window: float = 6.0,
+    prefer_end: bool = False,
+) -> list[int]:
+    """Find indices in words matching the token sequence of quote near target_time.
+
+    Uses multi-stage matching:
+    1. Exact sequence match of all tokens.
+    2. Longest sub-sequence (n-gram) match (down to 2 tokens).
+    3. Anchor token match (excluding short prepositions).
+    """
     if not quote or not words:
         return []
 
@@ -271,9 +283,6 @@ def _find_words_by_quote(quote: str, words: list[dict], target_time: float, sear
     if not tokens:
         return []
 
-    best_match_indices: list[int] = []
-    min_dist = float("inf")
-
     candidate_indices = [
         i for i, w in enumerate(words)
         if abs(w.get("start", 0.0) - target_time) <= search_window or abs(w.get("end", 0.0) - target_time) <= search_window
@@ -281,27 +290,49 @@ def _find_words_by_quote(quote: str, words: list[dict], target_time: float, sear
     if not candidate_indices:
         candidate_indices = list(range(len(words)))
 
-    k = len(tokens)
-    for i in candidate_indices:
-        if i + k <= len(words):
-            seq = [_normalize_token(words[i + j].get("word", "")) for j in range(k)]
-            if seq == tokens:
-                mid_time = (words[i].get("start", 0.0) + words[i + k - 1].get("end", 0.0)) / 2.0
-                dist = abs(mid_time - target_time)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_match_indices = list(range(i, i + k))
+    # 1. Search for longest matching n-gram slice from len(tokens) down to 2
+    for n in range(len(tokens), 1, -1):
+        best_match_indices: list[int] = []
+        min_dist = float("inf")
 
-    if not best_match_indices and candidate_indices:
+        if prefer_end:
+            slices_to_check = [tokens[s : s + n] for s in range(len(tokens) - n, -1, -1)]
+        else:
+            slices_to_check = [tokens[s : s + n] for s in range(len(tokens) - n + 1)]
+
+        for target_slice in slices_to_check:
+            k = len(target_slice)
+            for i in candidate_indices:
+                if i + k <= len(words):
+                    seq = [_normalize_token(words[i + j].get("word", "")) for j in range(k)]
+                    if seq == target_slice:
+                        mid_time = (words[i].get("start", 0.0) + words[i + k - 1].get("end", 0.0)) / 2.0
+                        dist = abs(mid_time - target_time)
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_match_indices = list(range(i, i + k))
+
+        if best_match_indices:
+            return best_match_indices
+
+    # 2. Single token match: prefer primary anchor token
+    anchor_tokens = [tokens[-1]] if prefer_end else [tokens[0]]
+    anchor_tokens.extend([t for t in tokens if len(t) >= 3 and t not in anchor_tokens])
+
+    for token in anchor_tokens:
+        best_match_indices = []
+        min_dist = float("inf")
         for i in candidate_indices:
             word_norm = _normalize_token(words[i].get("word", ""))
-            if word_norm in tokens:
+            if word_norm == token:
                 dist = abs(words[i].get("start", 0.0) - target_time)
                 if dist < min_dist:
                     min_dist = dist
                     best_match_indices = [i]
+        if best_match_indices:
+            return best_match_indices
 
-    return best_match_indices
+    return []
 
 
 def _align_fragments_to_words(
@@ -328,7 +359,7 @@ def _align_fragments_to_words(
         # 1. Start boundary alignment
         best_start_word = None
         if first_words_quote:
-            start_indices = _find_words_by_quote(first_words_quote, words, start_t, search_window=5.0)
+            start_indices = _find_words_by_quote(first_words_quote, words, start_t, search_window=5.0, prefer_end=False)
             if start_indices:
                 best_start_word = words[start_indices[0]]
 
@@ -348,7 +379,7 @@ def _align_fragments_to_words(
         best_end_word = None
         best_end_idx = None
         if last_words_quote:
-            end_indices = _find_words_by_quote(last_words_quote, words, end_t, search_window=5.0)
+            end_indices = _find_words_by_quote(last_words_quote, words, end_t, search_window=5.0, prefer_end=True)
             if end_indices:
                 best_end_idx = end_indices[-1]
                 best_end_word = words[best_end_idx]
@@ -365,12 +396,16 @@ def _align_fragments_to_words(
         # 3. Check punctuation (. ! ?) and thought completeness
         if best_end_word is not None and best_end_idx is not None:
             if not _has_sentence_end_punctuation(best_end_word.get("word", "")):
-                for lookahead_idx in range(best_end_idx + 1, min(len(words), best_end_idx + 4)):
+                # Lookahead up to 8 words to reach terminal punctuation, unless speech pauses > 1.2s
+                for lookahead_idx in range(best_end_idx + 1, min(len(words), best_end_idx + 9)):
                     ahead_word = words[lookahead_idx]
+                    prev_word = words[lookahead_idx - 1]
+                    if ahead_word.get("start", 0.0) - prev_word.get("end", 0.0) > 1.2:
+                        break
                     if ahead_word.get("end", end_t) - start_t > 65.0:
                         break
+                    best_end_word = ahead_word
                     if _has_sentence_end_punctuation(ahead_word.get("word", "")):
-                        best_end_word = ahead_word
                         break
 
             # Buffer +180ms (+0.18s) to prevent clipped consonants
