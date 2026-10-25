@@ -305,33 +305,81 @@ export default function Home() {
               </div>
             )}
 
-              {/* 4 стадии пайплайна */}
+              {/* Индивидуальные прогресс-бары для каждого этапа */}
               {stages.length > 0 && (
-                <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
                   {stages.map((st) => {
                     const isDone = st.status === "completed";
                     const isCurr = st.status === "in_progress";
                     const isFail = st.status === "failed";
 
+                    let stagePercent = 0;
+                    let stageLabel = "В очереди";
+
+                    if (isDone) {
+                      stagePercent = 100;
+                      stageLabel = "100%";
+                    } else if (isFail) {
+                      stagePercent = 100;
+                      stageLabel = "Сбой";
+                    } else if (isCurr) {
+                      if (st.key === "transcribing") {
+                        stagePercent = transcriptionProgress || 45;
+                        stageLabel = `${stagePercent}%`;
+                      } else if (st.key === "downloading") {
+                        stagePercent = 65;
+                        stageLabel = "Загрузка...";
+                      } else if (st.key === "analyzing") {
+                        stagePercent = 75;
+                        stageLabel = "Анализ...";
+                      } else if (st.key === "cutting") {
+                        stagePercent = 80;
+                        stageLabel = "Нарезка...";
+                      } else {
+                        stagePercent = 50;
+                        stageLabel = "В работе";
+                      }
+                    }
+
                     return (
                       <div
                         key={st.key}
-                        className={`rounded-xl border p-3 text-xs transition ${
+                        className={`rounded-2xl border p-3.5 text-xs transition flex flex-col justify-between gap-2.5 ${
                           isDone
-                            ? "border-emerald-500/30 bg-emerald-950/10 text-emerald-300"
+                            ? "border-emerald-500/30 bg-emerald-950/20 text-emerald-300"
                             : isCurr
-                            ? "border-violet-500/50 bg-violet-950/20 text-violet-200 ring-1 ring-violet-500/30"
+                            ? "border-violet-500/50 bg-violet-950/30 text-violet-200 ring-1 ring-violet-500/30 shadow-md shadow-violet-950/30"
                             : isFail
                             ? "border-red-500/30 bg-red-950/20 text-red-300"
                             : "border-zinc-800 bg-zinc-950/40 text-zinc-500"
                         }`}
                       >
-                        <div className="flex items-center gap-1.5 font-medium">
-                          {isDone && <span>✓</span>}
-                          {isCurr && <span className="animate-pulse">●</span>}
-                          {isFail && <span>✕</span>}
-                          {!isDone && !isCurr && !isFail && <span>○</span>}
-                          <span className="truncate">{st.title}</span>
+                        <div>
+                          <div className="flex items-center justify-between gap-1 mb-1">
+                            <span className="font-semibold text-zinc-200 truncate">
+                              {st.title}
+                            </span>
+                            <span className="text-[11px] font-mono shrink-0">
+                              {isDone ? "✓" : isFail ? "✕" : isCurr ? "●" : "○"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] opacity-75">{stageLabel}</p>
+                        </div>
+
+                        {/* Индивидуальная полоса прогресса этапа */}
+                        <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-300 ${
+                              isDone
+                                ? "bg-emerald-500"
+                                : isFail
+                                ? "bg-red-500"
+                                : isCurr
+                                ? "bg-violet-500 animate-pulse"
+                                : "bg-transparent"
+                            }`}
+                            style={{ width: `${stagePercent}%` }}
+                          />
                         </div>
                       </div>
                     );

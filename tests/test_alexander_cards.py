@@ -461,7 +461,7 @@ class TestCard9PipelinePolling(unittest.TestCase):
         data = resp.json()
         self.assertTrue(data["is_failed"])
         self.assertIn("Сбой на этапе", data["step_label"])
-        self.assertIn("Транскрибация", data["step_label"])
+        self.assertIn("Распознавание", data["step_label"])
 
 
 class TestCard6ClipsAndMediaContract(unittest.TestCase):

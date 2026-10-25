@@ -162,7 +162,7 @@ export function EditingStudioModal({
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
                 <span className="text-xs font-semibold text-zinc-400 block mb-1">
-                  ⚡ Финальные слова (Панчлайн):
+                  ⚡ Финальные слова (Финал):
                 </span>
                 <p className="text-sm italic text-emerald-300">
                   «{fragment.last_words || "Завершение мысли"}»

@@ -87,10 +87,10 @@ MEDIA_DIR = SHARED_MEDIA_DIR
 
 STEP_LABELS = {
     "pending": "Задача ожидает в очереди",
-    "downloading": "Загрузка медиапотока с YouTube",
-    "transcribing": "Транскрибация речи Faster-Whisper",
-    "analyzing": "Семантический анализ LLM и расчет вирусности",
-    "cutting": "Нарезка вертикальных видео FFmpeg (9:16)",
+    "downloading": "Загрузка видео",
+    "transcribing": "Распознавание речи",
+    "analyzing": "Поиск моментов и скоринг",
+    "cutting": "Нарезка клипов (9:16)",
     "completed": "Обработка успешно завершена",
     "error": "Ошибка обработки видео",
 }
@@ -153,10 +153,10 @@ def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
 
     stage_order = ["downloading", "transcribing", "analyzing", "cutting"]
     stage_titles = {
-        "downloading": "Загрузка медиапотока",
-        "transcribing": "Транскрибация речи Faster-Whisper",
-        "analyzing": "Семантический отбор LLM и скоринг",
-        "cutting": "Нарезка вертикальных клипов FFmpeg 9:16",
+        "downloading": "Загрузка видео",
+        "transcribing": "Распознавание речи",
+        "analyzing": "Поиск моментов",
+        "cutting": "Нарезка клипов",
     }
 
     try:

@@ -5,6 +5,7 @@ import { VideoPlayer } from "./VideoPlayer";
 
 export interface FragmentData {
   id: number;
+  task_id?: number;
   title: string;
   start_time: number;
   end_time: number;
@@ -30,7 +31,6 @@ interface FragmentCardProps {
   sourceUrl: string;
   apiUrl: string;
   youtubePreviewUrl: (sourceUrl: string, start: number) => string;
-  onOpenStudio?: (fragment: FragmentData) => void;
 }
 
 export function FragmentCard({
@@ -39,7 +39,6 @@ export function FragmentCard({
   sourceUrl,
   apiUrl,
   youtubePreviewUrl,
-  onOpenStudio,
 }: FragmentCardProps) {
   const [showCriticism, setShowCriticism] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -97,26 +96,23 @@ export function FragmentCard({
   return (
     <article className="flex flex-col justify-between rounded-3xl border border-zinc-800 bg-zinc-950 p-6 transition hover:border-zinc-700">
       <div>
+        {/* Шапка карточки: балл вирусности и точный таймкод без лишних номеров */}
         <div className="mb-4 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="rounded-full bg-violet-500/10 px-3 py-1 text-xs font-semibold text-violet-300">
-              #{index + 1}
-            </span>
-            <span
-              className={`rounded-full border px-3 py-1 text-xs font-bold ${getScoreBadgeColor(
-                score,
-              )}`}
-            >
-              ★ {score}/100 Virality
-            </span>
-          </div>
+          <span
+            className={`rounded-full border px-3 py-1 text-xs font-bold ${getScoreBadgeColor(
+              score,
+            )}`}
+          >
+            ★ {score}/100 Virality
+          </span>
 
           <span className="font-mono text-sm text-zinc-400">
             {formatTime(currentStart)} – {formatTime(currentEnd)}
           </span>
         </div>
 
-        <div className="my-4">
+        {/* Видеоплеер 9:16 */}
+        <div className="my-3">
           <VideoPlayer
             streamUrl={videoSrc}
             previewUrl={youtubePreviewUrl(sourceUrl, currentStart)}
@@ -124,27 +120,23 @@ export function FragmentCard({
           />
         </div>
 
-        <h3 className="text-lg font-semibold leading-snug text-white mt-2">
+        {/* Заголовок клипа */}
+        <h3 className="text-lg font-semibold leading-snug text-white mt-3">
           {fragment.title}
         </h3>
 
-        {(fragment.first_words || fragment.summary) && (
-          <p className="mt-2 text-sm italic text-zinc-400">
-            «{fragment.first_words ?? fragment.summary}…»
-          </p>
-        )}
-
-        {/* Структурированный блок вирусности (суб-баллы хука, автономности, панчлайна) */}
+        {/* Структурированный блок вирусности с единым цветом индикаторов */}
         <div className="mt-4 rounded-2xl bg-zinc-900/90 border border-zinc-800/80 p-4">
           <div className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 flex items-center justify-between">
-            <span>Анализ вирусного потенциала</span>
+            <span>Оценка потенциала</span>
             <span className="font-mono text-violet-400">{score} баллов</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="grid grid-cols-2 gap-2.5 text-xs">
+            {/* 1. Хук */}
             <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
               <div className="flex justify-between items-center text-zinc-400 mb-1">
-                <span>🎯 Сила хука:</span>
+                <span>🎯 Хук:</span>
                 <span className="font-semibold text-violet-300">{hookScore}/30</span>
               </div>
               <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
@@ -155,40 +147,43 @@ export function FragmentCard({
               </div>
             </div>
 
+            {/* 2. Смысл */}
             <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
               <div className="flex justify-between items-center text-zinc-400 mb-1">
-                <span>🌐 Автономность:</span>
-                <span className="font-semibold text-sky-300">{autonomyScore}/30</span>
+                <span>🌐 Смысл:</span>
+                <span className="font-semibold text-violet-300">{autonomyScore}/30</span>
               </div>
               <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-sky-500 rounded-full"
+                  className="h-full bg-violet-500 rounded-full"
                   style={{ width: `${Math.min(100, (autonomyScore / 30) * 100)}%` }}
                 />
               </div>
             </div>
 
+            {/* 3. Финал */}
             <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
               <div className="flex justify-between items-center text-zinc-400 mb-1">
-                <span>⚡ Панчлайн:</span>
-                <span className="font-semibold text-emerald-300">{punchlineScore}/25</span>
+                <span>⚡ Финал:</span>
+                <span className="font-semibold text-violet-300">{punchlineScore}/25</span>
               </div>
               <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-emerald-500 rounded-full"
+                  className="h-full bg-violet-500 rounded-full"
                   style={{ width: `${Math.min(100, (punchlineScore / 25) * 100)}%` }}
                 />
               </div>
             </div>
 
+            {/* 4. Вирусность */}
             <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
               <div className="flex justify-between items-center text-zinc-400 mb-1">
-                <span>🚀 Множитель:</span>
-                <span className="font-semibold text-amber-300">{viralMultiplier}/15</span>
+                <span>🚀 Вирусность:</span>
+                <span className="font-semibold text-violet-300">{viralMultiplier}/15</span>
               </div>
               <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-amber-500 rounded-full"
+                  className="h-full bg-violet-500 rounded-full"
                   style={{ width: `${Math.min(100, (viralMultiplier / 15) * 100)}%` }}
                 />
               </div>
@@ -196,13 +191,15 @@ export function FragmentCard({
           </div>
         </div>
 
+        {/* Пояснение хука */}
         {fragment.hook_reason && (
           <div className="mt-3 rounded-xl bg-violet-950/20 border border-violet-900/40 p-3 text-xs text-violet-300">
-            <span className="font-semibold block mb-0.5">🔥 Почему это залетит (Хук):</span>
+            <span className="font-semibold block mb-0.5">🔥 Почему это залетит:</span>
             {fragment.hook_reason}
           </div>
         )}
 
+        {/* Раскрывающаяся рецензия критика */}
         {fragment.internal_criticism && (
           <div className="mt-3">
             <button
@@ -210,11 +207,11 @@ export function FragmentCard({
               onClick={() => setShowCriticism(!showCriticism)}
               className="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 transition"
             >
-              <span>{showCriticism ? "▲ Скрыть рецензию состязательного критика" : "▼ Рецензия состязательного критика (Self-Debate)"}</span>
+              <span>{showCriticism ? "▲ Скрыть рецензию критика" : "▼ Рецензия состязательного критика"}</span>
             </button>
 
             {showCriticism && (
-              <div className="mt-2 rounded-xl bg-zinc-900 border border-zinc-800 p-3 text-xs text-zinc-300 leading-relaxed space-y-1">
+              <div className="mt-2 rounded-xl bg-zinc-900 border border-zinc-800 p-3 text-xs text-zinc-300 leading-relaxed">
                 <span className="font-semibold text-zinc-400 block mb-1">
                   ⚖ Вердикт критика:
                 </span>
@@ -224,20 +221,20 @@ export function FragmentCard({
           </div>
         )}
 
-        {/* Кнопка перехода в полноэкранную студию редактирования */}
-        {onOpenStudio && (
-          <div className="mt-4">
-            <button
-              type="button"
-              onClick={() => onOpenStudio(fragment)}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-violet-600 hover:text-white hover:border-violet-500 transition"
-            >
-              <span>✂ Открыть в студии монтажа 9:16</span>
-            </button>
-          </div>
-        )}
+        {/* Кнопка перехода в Студию монтажа в НОВОЙ вкладке */}
+        <div className="mt-4">
+          <a
+            href={`/editor?fragmentId=${fragment.id}&sourceUrl=${encodeURIComponent(sourceUrl)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-xs font-semibold text-zinc-200 hover:bg-violet-600 hover:text-white hover:border-violet-500 transition shadow-sm"
+          >
+            <span>✂ Открыть студию монтажа 9:16 ↗</span>
+          </a>
+        </div>
       </div>
 
+      {/* Подвал карточки */}
       <div className="mt-6 flex items-center justify-between border-t border-zinc-800 pt-4">
         <span className="text-xs text-zinc-500">
           Длительность: {Math.round(currentEnd - currentStart)} сек.
