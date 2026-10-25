@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { VideoPlayer } from "./VideoPlayer";
-import { TimeRangeSlider } from "./TimeRangeSlider";
 
 export interface FragmentData {
   id: number;
@@ -11,6 +10,10 @@ export interface FragmentData {
   end_time: number;
   duration: number;
   virality_score?: number;
+  hook_score?: number;
+  autonomy_score?: number;
+  punchline_score?: number;
+  viral_multiplier?: number;
   hook_reason?: string;
   internal_criticism?: string;
   first_words?: string;
@@ -27,6 +30,7 @@ interface FragmentCardProps {
   sourceUrl: string;
   apiUrl: string;
   youtubePreviewUrl: (sourceUrl: string, start: number) => string;
+  onOpenStudio?: (fragment: FragmentData) => void;
 }
 
 export function FragmentCard({
@@ -35,14 +39,19 @@ export function FragmentCard({
   sourceUrl,
   apiUrl,
   youtubePreviewUrl,
+  onOpenStudio,
 }: FragmentCardProps) {
   const [showCriticism, setShowCriticism] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
-  const [currentStart, setCurrentStart] = useState(fragment.start_time);
-  const [currentEnd, setCurrentEnd] = useState(fragment.end_time);
+  const currentStart = fragment.start_time;
+  const currentEnd = fragment.end_time;
 
   const score = fragment.virality_score ?? 75;
+  const hookScore = fragment.hook_score ?? Math.min(30, Math.round(score * 0.30));
+  const autonomyScore = fragment.autonomy_score ?? Math.min(30, Math.round(score * 0.30));
+  const punchlineScore = fragment.punchline_score ?? Math.min(25, Math.round(score * 0.25));
+  const viralMultiplier = fragment.viral_multiplier ?? Math.max(0, score - (hookScore + autonomyScore + punchlineScore));
 
   const getScoreBadgeColor = (val: number) => {
     if (val >= 80) return "bg-emerald-500/10 text-emerald-400 border-emerald-500/30";
@@ -50,7 +59,6 @@ export function FragmentCard({
     return "bg-zinc-500/10 text-zinc-400 border-zinc-700";
   };
 
-  // Резолв абсолютных URL к бэкенду (порт 8000)
   const resolveBackendUrl = (url?: string) => {
     if (!url) return undefined;
     if (url.startsWith("http://") || url.startsWith("https://")) return url;
@@ -104,7 +112,7 @@ export function FragmentCard({
           </div>
 
           <span className="font-mono text-sm text-zinc-400">
-            {formatTime(currentStart)} — {formatTime(currentEnd)}
+            {formatTime(currentStart)} – {formatTime(currentEnd)}
           </span>
         </div>
 
@@ -126,6 +134,68 @@ export function FragmentCard({
           </p>
         )}
 
+        {/* Структурированный блок вирусности (суб-баллы хука, автономности, панчлайна) */}
+        <div className="mt-4 rounded-2xl bg-zinc-900/90 border border-zinc-800/80 p-4">
+          <div className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 flex items-center justify-between">
+            <span>Анализ вирусного потенциала</span>
+            <span className="font-mono text-violet-400">{score} баллов</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
+              <div className="flex justify-between items-center text-zinc-400 mb-1">
+                <span>🎯 Сила хука:</span>
+                <span className="font-semibold text-violet-300">{hookScore}/30</span>
+              </div>
+              <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-violet-500 rounded-full"
+                  style={{ width: `${Math.min(100, (hookScore / 30) * 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
+              <div className="flex justify-between items-center text-zinc-400 mb-1">
+                <span>🌐 Автономность:</span>
+                <span className="font-semibold text-sky-300">{autonomyScore}/30</span>
+              </div>
+              <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-sky-500 rounded-full"
+                  style={{ width: `${Math.min(100, (autonomyScore / 30) * 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
+              <div className="flex justify-between items-center text-zinc-400 mb-1">
+                <span>⚡ Панчлайн:</span>
+                <span className="font-semibold text-emerald-300">{punchlineScore}/25</span>
+              </div>
+              <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500 rounded-full"
+                  style={{ width: `${Math.min(100, (punchlineScore / 25) * 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-zinc-950/70 p-2.5 border border-zinc-800">
+              <div className="flex justify-between items-center text-zinc-400 mb-1">
+                <span>🚀 Множитель:</span>
+                <span className="font-semibold text-amber-300">{viralMultiplier}/15</span>
+              </div>
+              <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-amber-500 rounded-full"
+                  style={{ width: `${Math.min(100, (viralMultiplier / 15) * 100)}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
         {fragment.hook_reason && (
           <div className="mt-3 rounded-xl bg-violet-950/20 border border-violet-900/40 p-3 text-xs text-violet-300">
             <span className="font-semibold block mb-0.5">🔥 Почему это залетит (Хук):</span>
@@ -138,29 +208,34 @@ export function FragmentCard({
             <button
               type="button"
               onClick={() => setShowCriticism(!showCriticism)}
-              className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1 transition"
+              className="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 transition"
             >
-              <span>{showCriticism ? "▲ Скрыть рецензию критика" : "▼ Рецензия состязательного критика"}</span>
+              <span>{showCriticism ? "▲ Скрыть рецензию состязательного критика" : "▼ Рецензия состязательного критика (Self-Debate)"}</span>
             </button>
 
             {showCriticism && (
-              <div className="mt-2 rounded-xl bg-zinc-900 border border-zinc-800 p-3 text-xs text-zinc-400 leading-relaxed">
+              <div className="mt-2 rounded-xl bg-zinc-900 border border-zinc-800 p-3 text-xs text-zinc-300 leading-relaxed space-y-1">
+                <span className="font-semibold text-zinc-400 block mb-1">
+                  ⚖ Вердикт критика:
+                </span>
                 {fragment.internal_criticism}
               </div>
             )}
           </div>
         )}
 
-        <TimeRangeSlider
-          fragmentId={fragment.id}
-          initialStart={fragment.start_time}
-          initialEnd={fragment.end_time}
-          apiUrl={apiUrl}
-          onAdjusted={(newStart, newEnd) => {
-            setCurrentStart(newStart);
-            setCurrentEnd(newEnd);
-          }}
-        />
+        {/* Кнопка перехода в полноэкранную студию редактирования */}
+        {onOpenStudio && (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => onOpenStudio(fragment)}
+              className="w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-violet-600 hover:text-white hover:border-violet-500 transition"
+            >
+              <span>✂ Открыть в студии монтажа 9:16</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="mt-6 flex items-center justify-between border-t border-zinc-800 pt-4">

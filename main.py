@@ -239,6 +239,14 @@ def _serialize_fragment_dto(fragment: ShortFragment, youtube_url: str | None = N
         "duration": round(duration, 3),
         "formatted_timecode": formatted_timecode,
         "virality_score": fragment.virality_score if fragment.virality_score is not None else 0,
+        "hook_score": getattr(fragment, "hook_score", None) or round((fragment.virality_score or 0) * 0.30),
+        "autonomy_score": getattr(fragment, "autonomy_score", None) or round((fragment.virality_score or 0) * 0.30),
+        "punchline_score": getattr(fragment, "punchline_score", None) or round((fragment.virality_score or 0) * 0.25),
+        "viral_multiplier": max(0, (fragment.virality_score or 0) - (
+            (getattr(fragment, "hook_score", None) or round((fragment.virality_score or 0) * 0.30)) +
+            (getattr(fragment, "autonomy_score", None) or round((fragment.virality_score or 0) * 0.30)) +
+            (getattr(fragment, "punchline_score", None) or round((fragment.virality_score or 0) * 0.25))
+        )),
         "hook_reason": fragment.hook_reason or fragment.reasoning or "",
         "internal_criticism": fragment.internal_criticism or "",
         "first_words": fragment.first_words or "",

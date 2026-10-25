@@ -74,10 +74,10 @@ class TestCard1ViralityPromptAndScoring(unittest.TestCase):
         self.assertEqual(len(aligned), 1)
         frag = aligned[0]
 
-        # Старт выравнивается по слову 10.15 с буфером -50мс: 10.10
-        self.assertAlmostEqual(frag["start_time"], 10.10, places=2)
-        # Конец выравнивается по последнему слову 26.20 с буфером +100мс: 26.30
-        self.assertAlmostEqual(frag["end_time"], 26.30, places=2)
+        # Старт выравнивается по слову 10.15 с буфером -80мс: 10.07
+        self.assertAlmostEqual(frag["start_time"], 10.07, places=2)
+        # Конец выравнивается по последнему слову 26.20 с буфером +180мс: 26.38
+        self.assertAlmostEqual(frag["end_time"], 26.38, places=2)
         self.assertGreater(frag["duration"], 15.0)
 
     def test_empty_transcript_handling(self):
@@ -109,6 +109,63 @@ class TestCard1ViralityPromptAndScoring(unittest.TestCase):
         frags_zero = [{"title": "F4", "start_time": 0.02, "end_time": 15.0}]
         aligned_zero = _align_fragments_to_words(frags_zero, words_zero)
         self.assertGreaterEqual(aligned_zero[0]["start_time"], 0.0)
+
+    def test_quote_matching_and_punctuation_snapping(self):
+        """Проверка сопоставления цитаты last_words с массивом Whisper и привязки к знакам препинания."""
+        words = [
+            {"word": "Секрет", "start": 5.0, "end": 5.4},
+            {"word": "прост:", "start": 5.42, "end": 5.8},
+            {"word": "выделяется", "start": 5.82, "end": 6.3},
+            {"word": "дофамин,", "start": 6.32, "end": 6.8},
+            {"word": "а", "start": 6.82, "end": 6.95},
+            {"word": "не", "start": 6.98, "end": 7.15},
+            {"word": "афамин.", "start": 7.18, "end": 7.75},
+            {"word": "Следующая", "start": 9.0, "end": 9.5},
+            {"word": "тема.", "start": 9.55, "end": 10.0},
+        ]
+        # LLM передал неточные таймкоды 4.8 и 7.0, но точные цитаты
+        frags = [
+            {
+                "title": "Дофаминовый панчлайн",
+                "start_time": 4.8,
+                "end_time": 7.0,
+                "first_words": "Секрет прост",
+                "last_words": "а не афамин",
+                "virality_score": 82,
+            }
+        ]
+        aligned = _align_fragments_to_words(frags, words)
+        self.assertEqual(len(aligned), 1)
+        res = aligned[0]
+
+        # Старт выравнивается по слову 'Секрет' (5.0) с буфером -80мс: 4.92
+        self.assertAlmostEqual(res["start_time"], 4.92, places=2)
+        # Конец по цитате 'а не афамин' доходит до слова 'афамин.' (7.75) со знаком '.' и буфером +180мс: 7.93
+        self.assertAlmostEqual(res["end_time"], 7.93, places=2)
+
+    def test_all_fragments_extracted_without_five_limit(self):
+        """Проверка снятия лимита 'от 1 до 5' при извлечении фрагментов по всему материалу."""
+        # Создаем длинный массив слов на ~350 секунд (около 10 сегментов)
+        long_words = []
+        t = 0.0
+        for i in range(120):
+            long_words.append({
+                "word": f"слово{i}.",
+                "start": round(t, 2),
+                "end": round(t + 2.5, 2),
+            })
+            t += 3.0
+
+        frags = _fallback_extract_moments("Длинный тестовый диалог", long_words)
+        # Должно быть извлечено более 5 фрагментов:
+        self.assertGreater(len(frags), 5)
+        # Все фрагменты имеют скоринг в диапазоне от 45 до 100:
+        for f in frags:
+            self.assertGreaterEqual(f["virality_score"], 45)
+            self.assertLessEqual(f["virality_score"], 100)
+            self.assertIn("hook_score", f)
+            self.assertIn("autonomy_score", f)
+            self.assertIn("punchline_score", f)
 
     def test_zero_em_dashes_in_llm_module(self):
         llm_file = REPO_ROOT / "llm.py"

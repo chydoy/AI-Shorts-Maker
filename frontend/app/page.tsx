@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { FragmentCard, FragmentData } from "../components/FragmentCard";
+import { EditingStudioModal } from "../components/EditingStudioModal";
 
 type StageItem = {
   key: string;
@@ -87,6 +88,8 @@ export default function Home() {
   const [stages, setStages] = useState<StageItem[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"top" | "archive">("top");
+  const [editingFragment, setEditingFragment] = useState<FragmentData | null>(null);
 
   useEffect(() => {
     if (!task?.task_id || status === "completed" || status === "error") {
@@ -207,6 +210,8 @@ export default function Home() {
     setStages([]);
     setError("");
     setLoading(false);
+    setActiveTab("top");
+    setEditingFragment(null);
   }
 
   return (
@@ -221,7 +226,7 @@ export default function Home() {
             <span className="block text-violet-400">из YouTube-видео</span>
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-zinc-400">
-            Вставь ссылку — система скачает видео, распознает речь, отберёт
+            Вставь ссылку: система скачает видео, распознает речь, отберёт
             хайповые моменты через LLM и нарежет клипы 9:16.
           </p>
         </header>
@@ -339,40 +344,121 @@ export default function Home() {
 
         {status === "completed" && (
           <section className="mt-10">
-            <div className="mb-5 flex items-end justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-bold">Найденные фрагменты</h2>
-                <p className="mt-1 text-sm text-zinc-500">
-                  {fragments.length} {fragments.length === 1 ? "момент" : "моментов"} до 60 секунд
-                </p>
-              </div>
-              <button
-                onClick={reset}
-                className="rounded-xl border border-zinc-700 px-4 py-2 text-sm transition hover:bg-zinc-900"
-              >
-                Новое видео
-              </button>
-            </div>
+            {(() => {
+              const topClips = fragments.filter((f) => (f.virality_score ?? 0) >= 75);
+              const archiveClips = fragments.filter((f) => (f.virality_score ?? 0) < 75);
+              const displayedClips = activeTab === "top" ? topClips : archiveClips;
 
-            {fragments.length === 0 ? (
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-8 text-center text-zinc-400">
-                AI не нашёл подходящих фрагментов.
-              </div>
-            ) : (
-              <div className="grid gap-6 md:grid-cols-2">
-                {fragments.map((fragment, index) => (
-                  <FragmentCard
-                    key={fragment.id}
-                    fragment={fragment}
-                    index={index}
-                    sourceUrl={sourceUrl}
-                    apiUrl={API_URL}
-                    youtubePreviewUrl={youtubePreviewUrl}
-                  />
-                ))}
-              </div>
-            )}
+              return (
+                <>
+                  <div className="mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+                    <div>
+                      <h2 className="text-2xl font-bold">Соревновательная таблица клипов</h2>
+                      <p className="mt-1 text-sm text-zinc-500">
+                        Всего отобрано {fragments.length} {fragments.length === 1 ? "фрагмент" : "фрагментов"} по шкале вирусности
+                      </p>
+                    </div>
+                    <button
+                      onClick={reset}
+                      className="rounded-xl border border-zinc-700 px-4 py-2 text-sm font-semibold transition hover:bg-zinc-900 self-start sm:self-auto"
+                    >
+                      Новое видео
+                    </button>
+                  </div>
+
+                  {/* Вкладки соревновательной таблицы: Топ клипов (75+) и Архив (<75) */}
+                  <div className="flex items-center gap-3 border-b border-zinc-800 pb-4 mb-6">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("top")}
+                      className={`flex items-center gap-2 rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${
+                        activeTab === "top"
+                          ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30"
+                          : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                      }`}
+                    >
+                      <span>🔥 Топ клипов (75+)</span>
+                      <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs font-bold">
+                        {topClips.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("archive")}
+                      className={`flex items-center gap-2 rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${
+                        activeTab === "archive"
+                          ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30"
+                          : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                      }`}
+                    >
+                      <span>📁 Архив (&lt;75)</span>
+                      <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs font-bold">
+                        {archiveClips.length}
+                      </span>
+                    </button>
+                  </div>
+
+                  {displayedClips.length === 0 ? (
+                    <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-8 text-center text-zinc-400">
+                      {activeTab === "top"
+                        ? "В этой выборке нет клипов со скором 75+. Проверьте вкладку «Архив (<75)». "
+                        : "В архиве пока пусто: все найденные моменты набрали более 75 баллов!"}
+                    </div>
+                  ) : (
+                    <div className="grid gap-6 md:grid-cols-2">
+                      {displayedClips.map((fragment, index) => (
+                        <FragmentCard
+                          key={fragment.id}
+                          fragment={fragment}
+                          index={index}
+                          sourceUrl={sourceUrl}
+                          apiUrl={API_URL}
+                          youtubePreviewUrl={youtubePreviewUrl}
+                          onOpenStudio={(f) => setEditingFragment(f)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </section>
+        )}
+
+        {/* Полноэкранный режим: отдельный экран студии редактирования */}
+        {editingFragment && (
+          <EditingStudioModal
+            fragment={editingFragment}
+            sourceUrl={sourceUrl}
+            apiUrl={API_URL}
+            youtubePreviewUrl={youtubePreviewUrl}
+            onClose={() => setEditingFragment(null)}
+            onSaved={(fragmentId, newStart, newEnd) => {
+              setFragments((prev) =>
+                prev.map((f) =>
+                  f.id === fragmentId
+                    ? {
+                        ...f,
+                        start_time: newStart,
+                        end_time: newEnd,
+                        duration: +(newEnd - newStart).toFixed(1),
+                      }
+                    : f
+                )
+              );
+              setEditingFragment((prev) =>
+                prev && prev.id === fragmentId
+                  ? {
+                      ...prev,
+                      start_time: newStart,
+                      end_time: newEnd,
+                      duration: +(newEnd - newStart).toFixed(1),
+                    }
+                  : prev
+              );
+            }}
+          />
         )}
       </div>
     </main>

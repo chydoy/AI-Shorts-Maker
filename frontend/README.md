@@ -1,4 +1,4 @@
-# Frontend — AI Shorts Maker
+# Frontend: AI Shorts Maker
 
 Next.js + Tailwind CSS интерфейс для AI Shorts Maker.
 

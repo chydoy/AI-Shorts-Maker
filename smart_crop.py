@@ -1,8 +1,10 @@
 """Face-aware 9:16 crop generation for horizontal source videos.
 
-MediaPipe Face Mesh is sampled through OpenCV. A lightweight nearest-centre tracker
-keeps detections associated between samples, lip movement helps choose the speaker,
-and an EMA smooths the crop window before an FFmpeg time expression is generated.
+MediaPipe Face Mesh is sampled through OpenCV. Scene cuts are detected via HSV
+histogram differences to eliminate nauseating panning and provide instant cuts.
+Mouth Aspect Ratio (MAR = lip height / mouth width) provides scale-invariant lip
+mobility measurement. Active speakers are detected individually per montage plan,
+and a compact step filter (up to 150 characters) is generated for FFmpeg.
 """
 from __future__ import annotations
 
@@ -22,8 +24,74 @@ def _ffmpeg_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
 
 
-def _tracks_from_video(source_path: str, start_sec: float, end_sec: float, sample_interval: float = 0.4):
-    """Return face tracks sampled across a clip. Import CV dependencies lazily."""
+def calculate_mar(landmarks) -> float:
+    """Calculate normalized Mouth Aspect Ratio (MAR = lip height / mouth width).
+
+    Eliminates dependency on distance between face and camera.
+    MediaPipe Face Mesh landmarks:
+      - Upper inner lip: 13
+      - Lower inner lip: 14
+      - Left mouth corner: 61
+      - Right mouth corner: 291
+    """
+    try:
+        if hasattr(landmarks, "landmark"):
+            points = landmarks.landmark
+        else:
+            points = landmarks
+
+        p13 = points[13]
+        p14 = points[14]
+        p61 = points[61]
+        p291 = points[291]
+
+        def _coord(p, attr):
+            if isinstance(p, dict):
+                return float(p.get(attr, 0.0))
+            return float(getattr(p, attr, 0.0))
+
+        lip_height = math.hypot(_coord(p13, "x") - _coord(p14, "x"), _coord(p13, "y") - _coord(p14, "y"))
+        mouth_width = math.hypot(_coord(p61, "x") - _coord(p291, "x"), _coord(p61, "y") - _coord(p291, "y"))
+
+        if mouth_width > 1e-5:
+            return round(lip_height / mouth_width, 4)
+        return 0.0
+    except (IndexError, AttributeError, KeyError):
+        return 0.0
+
+
+def detect_scene_cut_histogram(prev_frame, curr_frame, threshold: float = 0.55) -> tuple[bool, float]:
+    """Detect if a scene cut occurred between two frames using OpenCV HSV histogram correlation.
+
+    Returns (is_cut, correlation_score). Lower correlation indicates a scene transition.
+    """
+    import cv2
+
+    if prev_frame is None or curr_frame is None:
+        return False, 1.0
+
+    prev_hsv = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2HSV)
+    curr_hsv = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2HSV)
+
+    hist_prev = cv2.calcHist([prev_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+    hist_curr = cv2.calcHist([curr_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+
+    cv2.normalize(hist_prev, hist_prev, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+    cv2.normalize(hist_curr, hist_curr, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+    score = float(cv2.compareHist(hist_prev, hist_curr, cv2.HISTCMP_CORREL))
+    is_cut = score < threshold
+    return is_cut, score
+
+
+def _tracks_and_scenes_from_video(
+    source_path: str,
+    start_sec: float,
+    end_sec: float,
+    sample_interval: float = 0.4,
+    hist_threshold: float = 0.55,
+):
+    """Sample video, detect scene cuts via histogram differences, and extract face observations."""
     import cv2
     import mediapipe as mp
 
@@ -39,15 +107,21 @@ def _tracks_from_video(source_path: str, start_sec: float, end_sec: float, sampl
         capture.release()
         raise ValueError("Интервал Smart Crop выходит за границы видео")
 
-    tracks: dict[int, list[dict]] = defaultdict(list)
-    next_track_id = 0
-    previous_centres: dict[int, tuple[float, float]] = {}
+    scenes: list[dict] = []
+    current_scene_start = 0.0
+    current_scene_detections: list[dict] = []
+    prev_frame = None
+
+    frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 1920)
+    frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1080)
+
     mesh = mp.solutions.face_mesh.FaceMesh(
         static_image_mode=True,
         max_num_faces=8,
         refine_landmarks=True,
         min_detection_confidence=0.5,
     )
+
     try:
         sample_times = []
         t = start_sec
@@ -62,10 +136,27 @@ def _tracks_from_video(source_path: str, start_sec: float, end_sec: float, sampl
             ok, frame = capture.read()
             if not ok:
                 continue
-            height, width = frame.shape[:2]
+
+            frame_height, frame_width = frame.shape[:2]
+            rel_t = max(0.0, round(absolute_t - start_sec, 2))
+
+            # Scene Cut Detection via HSV histogram correlation
+            if prev_frame is not None:
+                is_cut, _ = detect_scene_cut_histogram(prev_frame, frame, threshold=hist_threshold)
+                if is_cut and (rel_t - current_scene_start) >= 1.0:
+                    scenes.append({
+                        "start_t": current_scene_start,
+                        "end_t": rel_t,
+                        "detections": current_scene_detections,
+                    })
+                    current_scene_start = rel_t
+                    current_scene_detections = []
+
+            prev_frame = frame.copy()
+
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             result = mesh.process(rgb)
-            detections = []
+
             for landmarks in (result.multi_face_landmarks or []):
                 xs = [point.x for point in landmarks.landmark]
                 ys = [point.y for point in landmarks.landmark]
@@ -74,66 +165,115 @@ def _tracks_from_video(source_path: str, start_sec: float, end_sec: float, sampl
                 face_area = max(0.0, right - left) * max(0.0, bottom - top)
                 center_x = (left + right) / 2.0
                 center_y = (top + bottom) / 2.0
-                # MediaPipe Face Mesh inner-lip landmarks: upper 13, lower 14.
-                upper_lip = landmarks.landmark[13]
-                lower_lip = landmarks.landmark[14]
-                mouth_gap = math.hypot(upper_lip.x - lower_lip.x, upper_lip.y - lower_lip.y)
-                detections.append({
-                    "time": max(0.0, absolute_t - start_sec),
+
+                mar = calculate_mar(landmarks)
+
+                current_scene_detections.append({
+                    "time": rel_t,
                     "center_x": center_x,
                     "center_y": center_y,
                     "area": face_area,
-                    "mouth_gap": mouth_gap,
-                    "width": width,
-                    "height": height,
+                    "mar": mar,
+                    "mouth_gap": mar,
+                    "width": frame_width,
+                    "height": frame_height,
                 })
 
-            used_tracks: set[int] = set()
-            # Greedy nearest-centre matching preserves identity between adjacent samples.
-            for detection in sorted(detections, key=lambda item: item["area"], reverse=True):
-                best_id = None
-                best_distance = float("inf")
-                for track_id, center in previous_centres.items():
-                    if track_id in used_tracks:
-                        continue
-                    distance = math.hypot(
-                        detection["center_x"] - center[0],
-                        detection["center_y"] - center[1],
-                    )
-                    if distance < best_distance and distance <= 0.22:
-                        best_id, best_distance = track_id, distance
-                if best_id is None:
-                    best_id = next_track_id
-                    next_track_id += 1
-                tracks[best_id].append(detection)
-                previous_centres[best_id] = (detection["center_x"], detection["center_y"])
-                used_tracks.add(best_id)
+        clip_duration = max(0.1, round(clip_end - start_sec, 2))
+        scenes.append({
+            "start_t": current_scene_start,
+            "end_t": clip_duration,
+            "detections": current_scene_detections,
+        })
     finally:
         mesh.close()
         capture.release()
+
+    return scenes, frame_width, frame_height
+
+
+def _tracks_from_video(source_path: str, start_sec: float, end_sec: float, sample_interval: float = 0.4):
+    """Return face tracks sampled across a clip for legacy and compatibility."""
+    scenes, _, _ = _tracks_and_scenes_from_video(source_path, start_sec, end_sec, sample_interval)
+    tracks: dict[int, list[dict]] = defaultdict(list)
+    next_track_id = 0
+    previous_centres: dict[int, tuple[float, float]] = {}
+
+    all_detections = []
+    for s in scenes:
+        all_detections.extend(s["detections"])
+
+    for d in sorted(all_detections, key=lambda item: item["time"]):
+        best_id = None
+        best_distance = float("inf")
+        for track_id, center in previous_centres.items():
+            dist = math.hypot(d["center_x"] - center[0], d["center_y"] - center[1])
+            if dist < best_distance and dist <= 0.22:
+                best_id, best_distance = track_id, dist
+        if best_id is None:
+            best_id = next_track_id
+            next_track_id += 1
+        tracks[best_id].append(d)
+        previous_centres[best_id] = (d["center_x"], d["center_y"])
 
     return tracks
 
 
 def _speaker_track(tracks: dict[int, list[dict]]) -> list[dict] | None:
-    """Prefer a large, consistently visible face with visible mouth activity."""
+    """Prefer a large, consistently visible face with normalized MAR mouth activity."""
     if not tracks:
         return None
 
     def score(observations: list[dict]) -> float:
         areas = [item["area"] for item in observations]
-        mouth = [item["mouth_gap"] for item in observations]
+        mars = [item.get("mar", item.get("mouth_gap", 0.0)) for item in observations]
         avg_area = sum(areas) / len(areas)
-        if len(mouth) > 1:
-            avg_mouth = sum(mouth) / len(mouth)
-            mouth_variance = sum((value - avg_mouth) ** 2 for value in mouth) / len(mouth)
-            mouth_activity = min(1.0, math.sqrt(mouth_variance) * 18.0)
+        if len(mars) > 1:
+            avg_mar = sum(mars) / len(mars)
+            mar_variance = sum((value - avg_mar) ** 2 for value in mars) / len(mars)
+            mouth_activity = min(1.0, math.sqrt(mar_variance) * 15.0)
         else:
             mouth_activity = 0.0
         visibility = min(1.0, len(observations) / 4.0)
-        return (0.60 * avg_area + 0.30 * avg_area * mouth_activity + 0.10 * avg_area * visibility)
+        return 0.50 * avg_area + 0.40 * avg_area * mouth_activity + 0.10 * avg_area * visibility
 
     return max(tracks.values(), key=score)
+
+
+def _active_speaker_in_scene(detections: list[dict], frame_width: int, crop_width: float, max_x: float) -> float:
+    """Determine the active speaker crop X individually for a single montage plan (scene segment)."""
+    if not detections:
+        return max_x / 2.0
+
+    # Cluster detections in this scene into speaker tracks by proximity
+    clusters: list[list[dict]] = []
+    for d in sorted(detections, key=lambda item: item["time"]):
+        matched = False
+        for cl in clusters:
+            last = cl[-1]
+            if math.hypot(d["center_x"] - last["center_x"], d["center_y"] - last["center_y"]) <= 0.20:
+                cl.append(d)
+                matched = True
+                break
+        if not matched:
+            clusters.append([d])
+
+    def scene_speaker_score(cluster: list[dict]) -> float:
+        areas = [item["area"] for item in cluster]
+        mars = [item.get("mar", item.get("mouth_gap", 0.0)) for item in cluster]
+        avg_area = sum(areas) / len(areas)
+        if len(mars) > 1:
+            avg_mar = sum(mars) / len(mars)
+            mar_variance = sum((m - avg_mar) ** 2 for m in mars) / len(mars)
+            mar_activity = min(1.0, math.sqrt(mar_variance) * 15.0)
+        else:
+            mar_activity = 0.0
+        return 0.50 * avg_area + 0.50 * avg_area * mar_activity
+
+    best_cluster = max(clusters, key=scene_speaker_score)
+    avg_x = sum(d["center_x"] for d in best_cluster) / len(best_cluster)
+    target_x = _clamp(avg_x * frame_width - crop_width / 2.0, 0.0, max_x)
+    return target_x
 
 
 def _ema(values: list[float], alpha: float = 0.35) -> list[float]:
@@ -143,6 +283,42 @@ def _ema(values: list[float], alpha: float = 0.35) -> list[float]:
     for value in values[1:]:
         smoothed.append(alpha * value + (1.0 - alpha) * smoothed[-1])
     return smoothed
+
+
+def _make_step_x_expression(scene_segments: list[tuple[float, float, float]]) -> str:
+    """Create a compact step FFmpeg x expression for scene cuts without recursive bloat.
+
+    Guarantees the overall filter remains compact (length up to 150 characters).
+    """
+    if not scene_segments:
+        return "(iw-ih*9/16)/2"
+
+    merged: list[tuple[float, float, int]] = []
+    for t_start, t_end, x_val in scene_segments:
+        x_int = int(round(x_val))
+        if merged and abs(merged[-1][2] - x_int) <= 15:
+            merged[-1] = (merged[-1][0], t_end, merged[-1][2])
+        else:
+            merged.append((t_start, t_end, x_int))
+
+    # Keep at most 3 scene cut transitions to strictly guarantee filter <= 150 chars
+    while len(merged) > 3:
+        shortest_idx = min(range(len(merged) - 1), key=lambda i: (merged[i][1] - merged[i][0]))
+        t0, _, x0 = merged[shortest_idx]
+        _, t2, _ = merged[shortest_idx + 1]
+        merged[shortest_idx] = (t0, t2, x0)
+        del merged[shortest_idx + 1]
+
+    if len(merged) == 1:
+        return str(merged[0][2])
+
+    expr = str(merged[-1][2])
+    for i in range(len(merged) - 2, -1, -1):
+        cut_t = _ffmpeg_number(merged[i][1])
+        x_val = merged[i][2]
+        expr = f"if(lt(t\\,{cut_t})\\,{x_val}\\,{expr})"
+
+    return expr
 
 
 def _make_x_expression(points: list[tuple[float, float]]) -> str:
@@ -161,14 +337,14 @@ def _make_x_expression(points: list[tuple[float, float]]) -> str:
                 f"*(t-{_ffmpeg_number(t0)})/{_ffmpeg_number(t1 - t0)})"
             )
         expression = f"if(lt(t\\,{_ffmpeg_number(t1)})\\,{segment}\\,{expression})"
-    # Keep the crop within the source frame even if the speaker moves to an edge.
     return f"max(0\\,min(iw-ih*9/16\\,{expression}))"
 
 
 def build_smart_crop_filter(source_path: str, start_sec: float, end_sec: float, alpha: float = 0.35) -> str:
-    """Build a smoothed speaker-following crop filter for a single clip.
+    """Build a scene-aware step crop filter for a single clip with instant cuts between speakers.
 
-    If face detection is unavailable or no face is found, use a stable centre crop.
+    Uses OpenCV histogram differences for scene cuts, normalized MAR for lip mobility,
+    and produces a compact FFmpeg filter expression of length up to 150 characters.
     """
     fallback = "crop=w=ih*9/16:h=ih:x=(iw-ih*9/16)/2:y=0,scale=1080:1920"
     if not Path(source_path).exists():
@@ -176,28 +352,30 @@ def build_smart_crop_filter(source_path: str, start_sec: float, end_sec: float, 
         return fallback
 
     try:
-        tracks = _tracks_from_video(source_path, start_sec, end_sec)
-        speaker = _speaker_track(tracks)
-        if not speaker:
+        scenes, frame_width, frame_height = _tracks_and_scenes_from_video(source_path, start_sec, end_sec)
+        crop_width = frame_height * 9.0 / 16.0
+        max_x = max(0.0, frame_width - crop_width)
+
+        has_any_face = any(bool(s["detections"]) for s in scenes)
+        if not has_any_face:
             logger.info("Smart Crop: faces not found; using centre crop")
             return fallback
 
-        frame_width = int(speaker[0]["width"])
-        frame_height = int(speaker[0]["height"])
-        crop_width = frame_height * 9.0 / 16.0
-        max_x = max(0.0, frame_width - crop_width)
-        target_x = []
-        for observation in speaker:
-            # Keep the face centre near the middle of the vertical crop.
-            x = _clamp(observation["center_x"] * frame_width - crop_width / 2.0, 0.0, max_x)
-            target_x.append(x)
-        smoothed_x = _ema(target_x, alpha=alpha)
-        points = [(item["time"], x) for item, x in zip(speaker, smoothed_x)]
-        x_expression = _make_x_expression(points)
-        crop = f"crop=w=ih*9/16:h=ih:x='{x_expression}':y=0,scale=1080:1920"
-        logger.info("Smart Crop selected a face track with %s samples", len(points))
-        return crop
+        scene_segments = []
+        for s in scenes:
+            scene_crop_x = _active_speaker_in_scene(s["detections"], frame_width, crop_width, max_x)
+            scene_segments.append((s["start_t"], s["end_t"], scene_crop_x))
+
+        x_expr = _make_step_x_expression(scene_segments)
+        filter_str = f"crop=w=ih*9/16:h=ih:x='{x_expr}':y=0,scale=1080:1920"
+
+        # Guarantee compact filter <= 150 characters
+        if len(filter_str) > 150:
+            avg_x = int(round(sum(seg[2] for seg in scene_segments) / len(scene_segments)))
+            filter_str = f"crop=w=ih*9/16:h=ih:x={avg_x}:y=0,scale=1080:1920"
+
+        logger.info("Smart Crop generated step filter (len=%d): %s", len(filter_str), filter_str)
+        return filter_str
     except Exception as exc:
-        # Crop detection must not prevent a video from being produced.
         logger.warning("Smart Crop failed (%s); using centre crop", exc)
         return fallback
