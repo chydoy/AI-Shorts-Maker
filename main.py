@@ -129,7 +129,7 @@ def _build_youtube_preview_url(source_url: str | None, start_time: float) -> str
         return source_url
 
 
-def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
+def _get_stage_info(task: VideoTask, fragments: list[ShortFragment] | None = None) -> tuple[int, str, str, list[dict]]:
     """Расчет прогресса выполнения (0–100%), текущего шага и детализации каждого этапа."""
     status = task.status
     current_step = getattr(task, "current_step", None) or status
@@ -207,7 +207,7 @@ def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
         else:
             step_label = STEP_LABELS.get("error", "Ошибка обработки видео")
     else:
-        step_label = STEP_LABELS.get(current_step, current_step)
+        step_label = f"Нарезка клипов: {sum(1 for c in fragments if getattr(c, 'status', None) == 'ready')} из {len(fragments)} готово" if (current_step == "cutting" and fragments and len(fragments) > 0) else STEP_LABELS.get(current_step, current_step)
 
     return progress, current_step, step_label, stages
 
@@ -285,7 +285,7 @@ def get_task(task_id: int):
             .all()
         )
 
-        progress, current_step, step_label, stages = _get_stage_info(task)
+        progress, current_step, step_label, stages = _get_stage_info(task, fragments)
 
         clips_dto = [_serialize_fragment_dto(f, task.youtube_url) for f in fragments]
         ready_count = sum(1 for c in clips_dto if c["status"] == "ready")
@@ -303,6 +303,7 @@ def get_task(task_id: int):
                 ),
             "current_step": current_step,
             "step_label": step_label,
+            "step_detail": getattr(task, "step_detail", None) or "",
             "error_message": task.error_message,
             "stages": stages,
             "clips_summary": {
@@ -342,7 +343,7 @@ def get_task_status(task_id: int):
             .all()
         )
 
-        progress, current_step, step_label, stages = _get_stage_info(task)
+        progress, current_step, step_label, stages = _get_stage_info(task, fragments)
 
         clips_dto = [_serialize_fragment_dto(f, task.youtube_url) for f in fragments]
         ready_count = sum(1 for c in clips_dto if c["status"] == "ready")

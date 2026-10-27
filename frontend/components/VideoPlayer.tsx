@@ -23,6 +23,8 @@ export function VideoPlayer({
   const [duration, setDuration] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   useEffect(() => {
     if (autoPlay && videoRef.current && streamUrl && !hasError) {
@@ -53,6 +55,23 @@ export function VideoPlayer({
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      setHasError(false);
+      setIsRetrying(false);
+    }
+  };
+
+  const handleVideoError = () => {
+    if (retryCount < 4) {
+      setIsRetrying(true);
+      setTimeout(() => {
+        setRetryCount((prev) => prev + 1);
+        setIsRetrying(false);
+        if (videoRef.current) {
+          videoRef.current.load();
+        }
+      }, 2000);
+    } else {
+      setHasError(true);
     }
   };
 
@@ -81,6 +100,16 @@ export function VideoPlayer({
     const rem = s % 60;
     return `${m}:${rem.toString().padStart(2, "0")}`;
   };
+
+  if (isRetrying) {
+    return (
+      <div className="relative aspect-[9/16] w-full max-w-[280px] mx-auto overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 flex flex-col items-center justify-center p-4 text-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-600 border-t-violet-400 mb-3" />
+        <p className="text-sm font-medium text-zinc-300 mb-1">Загрузка видео...</p>
+        <p className="text-xs text-zinc-500">Подключение видеопотока...</p>
+      </div>
+    );
+  }
 
   if (!streamUrl || hasError) {
     return (
@@ -117,7 +146,7 @@ export function VideoPlayer({
         playsInline
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
-        onError={() => setHasError(true)}
+        onError={handleVideoError}
         onClick={togglePlay}
         className="h-full w-full object-cover cursor-pointer"
       />

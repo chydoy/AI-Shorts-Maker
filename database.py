@@ -33,6 +33,7 @@ class VideoTask(Base):
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     transcription_progress = Column(Integer, default=0, nullable=False)
+    step_detail = Column(Text, nullable=True)
 
 
 class Transcript(Base):
@@ -89,6 +90,7 @@ def init_db(retries: int = 10, delay: int = 2):
                     ("error_message", "TEXT"),
                     ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("transcription_progress", "INTEGER NOT NULL DEFAULT 0"),
+                    ("step_detail", "TEXT"),
                 ]
                 for col_name, col_type in task_columns:
                     try:

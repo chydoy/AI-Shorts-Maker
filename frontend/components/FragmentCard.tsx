@@ -40,7 +40,6 @@ export function FragmentCard({
   apiUrl,
   youtubePreviewUrl,
 }: FragmentCardProps) {
-  const [showCriticism, setShowCriticism] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
   const currentStart = fragment.start_time;
@@ -199,25 +198,11 @@ export function FragmentCard({
           </div>
         )}
 
-        {/* Раскрывающаяся рецензия критика */}
+        {/* Вердикт критика в таком же аккуратном открытом формате */}
         {fragment.internal_criticism && (
-          <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => setShowCriticism(!showCriticism)}
-              className="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 transition"
-            >
-              <span>{showCriticism ? "▲ Скрыть рецензию критика" : "▼ Рецензия состязательного критика"}</span>
-            </button>
-
-            {showCriticism && (
-              <div className="mt-2 rounded-xl bg-zinc-900 border border-zinc-800 p-3 text-xs text-zinc-300 leading-relaxed">
-                <span className="font-semibold text-zinc-400 block mb-1">
-                  ⚖ Вердикт критика:
-                </span>
-                {fragment.internal_criticism}
-              </div>
-            )}
+          <div className="mt-2.5 rounded-xl bg-violet-950/20 border border-violet-900/40 p-3 text-xs text-violet-300">
+            <span className="font-semibold block mb-0.5">⚖ Вердикт:</span>
+            {fragment.internal_criticism}
           </div>
         )}
 
@@ -229,7 +214,7 @@ export function FragmentCard({
             rel="noopener noreferrer"
             className="w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-xs font-semibold text-zinc-200 hover:bg-violet-600 hover:text-white hover:border-violet-500 transition shadow-sm"
           >
-            <span>✂ Открыть студию монтажа 9:16 ↗</span>
+            <span>✂ Открыть студию монтажа 9:16</span>
           </a>
         </div>
       </div>

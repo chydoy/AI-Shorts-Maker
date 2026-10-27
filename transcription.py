@@ -76,10 +76,20 @@ def transcribe_audio(audio_path: str, progress_callback=None) -> dict:
             last_progress = current_progress
 
             if progress_callback:
-                progress_callback(current_progress)
+                try:
+                    progress_callback(
+                        current_progress,
+                        last_text=segment.text.strip(),
+                        word_count=len(words),
+                    )
+                except TypeError:
+                    progress_callback(current_progress)
 
     if progress_callback:
-        progress_callback(100)
+        try:
+            progress_callback(100, last_text="Стенограмма сформирована", word_count=len(words))
+        except TypeError:
+            progress_callback(100)
 
     return {
         "text": " ".join(part for part in text_parts if part),

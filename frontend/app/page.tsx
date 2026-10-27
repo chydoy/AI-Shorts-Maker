@@ -17,6 +17,7 @@ type TaskStatusResponse = {
   transcription_progress: number;
   current_step: string;
   step_label: string;
+  step_detail?: string;
   is_completed: boolean;
   is_failed: boolean;
   error_message?: string;
@@ -82,6 +83,7 @@ export default function Home() {
   const [sourceUrl, setSourceUrl] = useState("");
   const [status, setStatus] = useState("idle");
   const [stepLabel, setStepLabel] = useState("");
+  const [stepDetail, setStepDetail] = useState("");
   const [progress, setProgress] = useState(0);
   const [transcriptionProgress, setTranscriptionProgress] = useState(0);
   const [stages, setStages] = useState<StageItem[]>([]);
@@ -113,6 +115,7 @@ export default function Home() {
         setProgress(data.progress ?? 0);
         setTranscriptionProgress(data.transcription_progress ?? 0);
         setStepLabel(data.step_label ?? data.status);
+        if (data.step_detail) setStepDetail(data.step_detail);
         if (data.stages) setStages(data.stages);
 
         if (data.is_completed || data.status === "completed") {
@@ -163,6 +166,7 @@ export default function Home() {
     setFragments([]);
     setProgress(0);
     setTranscriptionProgress(0);
+    setStepDetail("");
     setStages([]);
 
     if (!isYouTubeUrl(url)) {
@@ -203,6 +207,7 @@ export default function Home() {
     setSourceUrl("");
     setStatus("idle");
     setStepLabel("");
+    setStepDetail("");
     setProgress(0);
     setTranscriptionProgress(0);
     setStages([]);
@@ -258,7 +263,7 @@ export default function Home() {
             <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
               <div className="flex items-center justify-between gap-4 mb-3">
                 <div>
-                  <p className="font-semibold text-white">{stepLabel || "Обработка..."}</p>
+                  <p className="font-semibold text-white">Конвейер обработки ролика</p>
                   {task && (
                     <p className="mt-0.5 text-xs text-zinc-500">
                       Задача #{task.task_id}
@@ -282,27 +287,77 @@ export default function Home() {
                   style={{ width: `${Math.min(100, Math.max(progress, 3))}%` }}
                 />
               </div>
-              {status === "transcribing" && (
-              <div className="mt-5">
-                <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-                  <span className="text-zinc-300">Распознавание речи (Whisper)</span>
-                  <span className="font-mono font-semibold text-violet-400">
-                    {transcriptionProgress}%
-                  </span>
-                </div>
+              {/* Зеленая шкала текущего активного этапа со всеми подробностями */}
+              {status !== "completed" && (() => {
+                let currentStageTitle = "Подготовка...";
+                let currentStageDetail = stepDetail;
+                let currentStagePercent = progress;
 
-                <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
-                  <div
-                    className="h-full rounded-full bg-emerald-500 transition-all duration-500"
-                    style={{
-                      width: `${Math.min(100, Math.max(0, transcriptionProgress))}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
+                if (status === "downloading") {
+                  currentStageTitle = "Загрузка исходного видеопотока 1080p";
+                  currentStagePercent = Math.min(100, Math.max(15, progress * 4));
+                  if (!currentStageDetail) {
+                    currentStageDetail = "Скачивание видеопотока 1080p и извлечение аудиодорожки (yt-dlp)...";
+                  }
+                } else if (status === "transcribing") {
+                  currentStageTitle = "Распознавание речи (Faster-Whisper)";
+                  currentStagePercent = transcriptionProgress || 0;
+                  if (!currentStageDetail) {
+                    currentStageDetail = "Пословная разметка аудиодорожки и таймкодов...";
+                  }
+                } else if (status === "analyzing") {
+                  currentStageTitle = "Поиск смыслов и вирусных хуков (LLM)";
+                  currentStagePercent = Math.min(100, Math.max(20, (progress - 40) * 3));
+                  if (!currentStageDetail) {
+                    currentStageDetail = "Семантический анализ смысловых блоков и расчёт Virality Score (1–100)...";
+                  }
+                } else if (status === "cutting") {
+                  currentStageTitle = "Рендеринг клипов 9:16 (FFmpeg Smart Crop)";
+                  currentStagePercent = Math.min(100, Math.max(10, (progress - 75) * 4));
+                  if (!currentStageDetail) {
+                    currentStageDetail = stepLabel.includes("из") ? stepLabel : "Асинхронная нарезка фрагментов и кадрирование спикера...";
+                  }
+                } else {
+                  currentStageTitle = stepLabel || "Обработка...";
+                  currentStagePercent = progress;
+                }
 
-              {/* Индивидуальные прогресс-бары для каждого этапа */}
+                return (
+                  <div className="mt-5 rounded-2xl bg-zinc-950/60 border border-emerald-950/40 p-4">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="font-semibold text-emerald-300 flex items-center gap-2">
+                        <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                        {currentStageTitle}
+                      </span>
+                      <span className="font-mono font-bold text-emerald-400">
+                        {currentStagePercent}%
+                      </span>
+                    </div>
+
+                    {/* Информативная плашка подробностей (слова Whisper, шаги LLM, нарезка) */}
+                    {currentStageDetail && (
+                      <div className="mt-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-300 font-mono">
+                        <div className="flex items-start gap-2">
+                          <span className="text-emerald-400 shrink-0 font-bold">›</span>
+                          <span className="line-clamp-2 break-words">
+                            {currentStageDetail}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Зеленая шкала прогресса активного этапа */}
+                    <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all duration-500 shadow-sm shadow-emerald-500/40"
+                        style={{ width: `${currentStagePercent}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Статусные карточки этапов конвейера: без шкал, без процентов, без лишнего текста */}
               {stages.length > 0 && (
                 <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
                   {stages.map((st) => {
@@ -310,74 +365,33 @@ export default function Home() {
                     const isCurr = st.status === "in_progress";
                     const isFail = st.status === "failed";
 
-                    let stagePercent = 0;
-                    let stageLabel = "В очереди";
-
-                    if (isDone) {
-                      stagePercent = 100;
-                      stageLabel = "100%";
-                    } else if (isFail) {
-                      stagePercent = 100;
-                      stageLabel = "Сбой";
-                    } else if (isCurr) {
-                      if (st.key === "transcribing") {
-                        stagePercent = transcriptionProgress || 45;
-                        stageLabel = `${stagePercent}%`;
-                      } else if (st.key === "downloading") {
-                        stagePercent = 65;
-                        stageLabel = "Загрузка...";
-                      } else if (st.key === "analyzing") {
-                        stagePercent = 75;
-                        stageLabel = "Анализ...";
-                      } else if (st.key === "cutting") {
-                        stagePercent = 80;
-                        stageLabel = "Нарезка...";
-                      } else {
-                        stagePercent = 50;
-                        stageLabel = "В работе";
-                      }
-                    }
-
                     return (
                       <div
                         key={st.key}
-                        className={`rounded-2xl border p-3.5 text-xs transition flex flex-col justify-between gap-2.5 ${
+                        className={`rounded-2xl border px-4 py-3 text-xs transition flex items-center justify-between gap-2 ${
                           isDone
                             ? "border-emerald-500/30 bg-emerald-950/20 text-emerald-300"
                             : isCurr
                             ? "border-violet-500/50 bg-violet-950/30 text-violet-200 ring-1 ring-violet-500/30 shadow-md shadow-violet-950/30"
                             : isFail
                             ? "border-red-500/30 bg-red-950/20 text-red-300"
-                            : "border-zinc-800 bg-zinc-950/40 text-zinc-500"
+                            : "border-zinc-800 bg-zinc-950/40 text-zinc-400"
                         }`}
                       >
-                        <div>
-                          <div className="flex items-center justify-between gap-1 mb-1">
-                            <span className="font-semibold text-zinc-200 truncate">
-                              {st.title}
-                            </span>
-                            <span className="text-[11px] font-mono shrink-0">
-                              {isDone ? "✓" : isFail ? "✕" : isCurr ? "●" : "○"}
-                            </span>
-                          </div>
-                          <p className="text-[11px] opacity-75">{stageLabel}</p>
-                        </div>
-
-                        {/* Индивидуальная полоса прогресса этапа */}
-                        <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full transition-all duration-300 ${
-                              isDone
-                                ? "bg-emerald-500"
-                                : isFail
-                                ? "bg-red-500"
-                                : isCurr
-                                ? "bg-violet-500 animate-pulse"
-                                : "bg-transparent"
-                            }`}
-                            style={{ width: `${stagePercent}%` }}
-                          />
-                        </div>
+                        <span className="font-medium truncate">
+                          {st.title}
+                        </span>
+                        <span className="shrink-0 text-sm font-bold flex items-center justify-center">
+                          {isDone ? (
+                            <span className="text-emerald-400">✓</span>
+                          ) : isFail ? (
+                            <span className="text-red-400">✕</span>
+                          ) : isCurr ? (
+                            <span className="inline-block h-2 w-2 rounded-full bg-violet-400 animate-pulse" />
+                          ) : (
+                            <span className="text-zinc-600 text-lg leading-none select-none">•</span>
+                          )}
+                        </span>
                       </div>
                     );
                   })}
