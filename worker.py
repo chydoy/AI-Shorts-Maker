@@ -55,6 +55,7 @@ def process_video(self, task_id: int, youtube_url: str):
         task.current_step = "downloading"
         task.progress = 15
         task.transcription_progress = 0
+        task.step_detail = "Загрузка видеопотока 1080p и извлечение аудиодорожки (yt-dlp)..."
         task.error_message = None
         db.commit()
 
@@ -70,11 +71,14 @@ def process_video(self, task_id: int, youtube_url: str):
         task.current_step = "transcribing"
         task.progress = 40
         task.transcription_progress = 0
+        task.step_detail = "Инициализация Faster-Whisper и пословная разметка аудиодорожки..."
         db.commit()
 
-        def update_transcription_progress(value: int):
-            # Callback вызывается по мере обработки сегментов Whisper.
+        def update_transcription_progress(value: int, last_text: str = "", word_count: int = 0):
             task.transcription_progress = max(0, min(100, int(value)))
+            if last_text:
+                clean_snippet = last_text.strip().replace("\n", " ")
+                task.step_detail = f"Распознано {word_count} слов: «{clean_snippet[:80]}»"
             db.commit()
 
         result = transcribe_audio(
@@ -82,6 +86,8 @@ def process_video(self, task_id: int, youtube_url: str):
             progress_callback=update_transcription_progress,
         )
         task.transcription_progress = 100
+        words_total = len(result.get("words", []))
+        task.step_detail = f"Распознавание завершено: сформировано {words_total} слов с таймкодами"
         db.commit()
 
         save_transcript_json(result, task_id)
@@ -100,6 +106,7 @@ def process_video(self, task_id: int, youtube_url: str):
         task.status = "analyzing"
         task.current_step = "analyzing"
         task.progress = 65
+        task.step_detail = "Семантический отбор LLM: поиск хуков и расчет Virality Score (1–100)..."
         db.commit()
 
         fragments_data = find_shorts_moments(
@@ -133,6 +140,9 @@ def process_video(self, task_id: int, youtube_url: str):
                 internal_criticism=item.get("internal_criticism", ""),
                 first_words=item.get("first_words", ""),
                 last_words=item.get("last_words", ""),
+                hook_score=int(item.get("hook_score", 0)) if item.get("hook_score") is not None else None,
+                autonomy_score=int(item.get("autonomy_score", 0)) if item.get("autonomy_score") is not None else None,
+                punchline_score=int(item.get("punchline_score", 0)) if item.get("punchline_score") is not None else None,
                 adjusted_start_time=None,
                 adjusted_end_time=None,
                 status="cutting",
@@ -146,9 +156,9 @@ def process_video(self, task_id: int, youtube_url: str):
         task.status = "cutting"
         task.current_step = "cutting"
         task.progress = 80
-        db.commit()
-
         total_frags = len(saved_fragments)
+        task.step_detail = f"Рендеринг вертикальных Shorts 9:16 (FFmpeg Smart Crop)... Всего: {total_frags}"
+        db.commit()
         default_source = source_video_path or source_video_for_task(task_id)
 
         for idx, fragment in enumerate(saved_fragments):
@@ -172,6 +182,7 @@ def process_video(self, task_id: int, youtube_url: str):
                     98,
                     80 + int(18 * (idx + 1) / total_frags),
                 )
+                task.step_detail = f"Рендеринг клипов 9:16 (FFmpeg Smart Crop): клип {idx + 1} из {total_frags} готов"
 
             db.commit()
 
@@ -179,6 +190,7 @@ def process_video(self, task_id: int, youtube_url: str):
         task.current_step = "completed"
         task.progress = 100
         task.transcription_progress = 100
+        task.step_detail = "Все клипы успешно нарезаны и готовы к просмотру"
         task.error_message = None
         db.commit()
 

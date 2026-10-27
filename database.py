@@ -33,6 +33,7 @@ class VideoTask(Base):
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     transcription_progress = Column(Integer, default=0, nullable=False)
+    step_detail = Column(Text, nullable=True)
 
 
 class Transcript(Base):
@@ -65,6 +66,9 @@ class ShortFragment(Base):
     internal_criticism = Column(Text, nullable=True)
     first_words = Column(String, nullable=True)
     last_words = Column(String, nullable=True)
+    hook_score = Column(Integer, default=0, nullable=True)
+    autonomy_score = Column(Integer, default=0, nullable=True)
+    punchline_score = Column(Integer, default=0, nullable=True)
     adjusted_start_time = Column(Float, nullable=True)
     adjusted_end_time = Column(Float, nullable=True)
     video_path = Column(String, nullable=True)
@@ -86,6 +90,7 @@ def init_db(retries: int = 10, delay: int = 2):
                     ("error_message", "TEXT"),
                     ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("transcription_progress", "INTEGER NOT NULL DEFAULT 0"),
+                    ("step_detail", "TEXT"),
                 ]
                 for col_name, col_type in task_columns:
                     try:
@@ -108,6 +113,9 @@ def init_db(retries: int = 10, delay: int = 2):
                     ("internal_criticism", "TEXT"),
                     ("first_words", "VARCHAR"),
                     ("last_words", "VARCHAR"),
+                    ("hook_score", "INTEGER DEFAULT 0"),
+                    ("autonomy_score", "INTEGER DEFAULT 0"),
+                    ("punchline_score", "INTEGER DEFAULT 0"),
                     ("adjusted_start_time", "FLOAT"),
                     ("adjusted_end_time", "FLOAT"),
                     ("video_path", "VARCHAR"),

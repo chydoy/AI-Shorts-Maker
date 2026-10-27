@@ -87,10 +87,10 @@ MEDIA_DIR = SHARED_MEDIA_DIR
 
 STEP_LABELS = {
     "pending": "Задача ожидает в очереди",
-    "downloading": "Загрузка медиапотока с YouTube",
-    "transcribing": "Транскрибация речи Faster-Whisper",
-    "analyzing": "Семантический анализ LLM и расчет вирусности",
-    "cutting": "Нарезка вертикальных видео FFmpeg (9:16)",
+    "downloading": "Загрузка видео",
+    "transcribing": "Распознавание речи",
+    "analyzing": "Поиск моментов и скоринг",
+    "cutting": "Нарезка клипов (9:16)",
     "completed": "Обработка успешно завершена",
     "error": "Ошибка обработки видео",
 }
@@ -129,7 +129,7 @@ def _build_youtube_preview_url(source_url: str | None, start_time: float) -> str
         return source_url
 
 
-def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
+def _get_stage_info(task: VideoTask, fragments: list[ShortFragment] | None = None) -> tuple[int, str, str, list[dict]]:
     """Расчет прогресса выполнения (0–100%), текущего шага и детализации каждого этапа."""
     status = task.status
     current_step = getattr(task, "current_step", None) or status
@@ -153,10 +153,10 @@ def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
 
     stage_order = ["downloading", "transcribing", "analyzing", "cutting"]
     stage_titles = {
-        "downloading": "Загрузка медиапотока",
-        "transcribing": "Транскрибация речи Faster-Whisper",
-        "analyzing": "Семантический отбор LLM и скоринг",
-        "cutting": "Нарезка вертикальных клипов FFmpeg 9:16",
+        "downloading": "Загрузка видео",
+        "transcribing": "Распознавание речи",
+        "analyzing": "Поиск моментов",
+        "cutting": "Нарезка клипов",
     }
 
     try:
@@ -207,7 +207,7 @@ def _get_stage_info(task: VideoTask) -> tuple[int, str, str, list[dict]]:
         else:
             step_label = STEP_LABELS.get("error", "Ошибка обработки видео")
     else:
-        step_label = STEP_LABELS.get(current_step, current_step)
+        step_label = f"Нарезка клипов: {sum(1 for c in fragments if getattr(c, 'status', None) == 'ready')} из {len(fragments)} готово" if (current_step == "cutting" and fragments and len(fragments) > 0) else STEP_LABELS.get(current_step, current_step)
 
     return progress, current_step, step_label, stages
 
@@ -239,6 +239,14 @@ def _serialize_fragment_dto(fragment: ShortFragment, youtube_url: str | None = N
         "duration": round(duration, 3),
         "formatted_timecode": formatted_timecode,
         "virality_score": fragment.virality_score if fragment.virality_score is not None else 0,
+        "hook_score": getattr(fragment, "hook_score", None) or round((fragment.virality_score or 0) * 0.30),
+        "autonomy_score": getattr(fragment, "autonomy_score", None) or round((fragment.virality_score or 0) * 0.30),
+        "punchline_score": getattr(fragment, "punchline_score", None) or round((fragment.virality_score or 0) * 0.25),
+        "viral_multiplier": max(0, (fragment.virality_score or 0) - (
+            (getattr(fragment, "hook_score", None) or round((fragment.virality_score or 0) * 0.30)) +
+            (getattr(fragment, "autonomy_score", None) or round((fragment.virality_score or 0) * 0.30)) +
+            (getattr(fragment, "punchline_score", None) or round((fragment.virality_score or 0) * 0.25))
+        )),
         "hook_reason": fragment.hook_reason or fragment.reasoning or "",
         "internal_criticism": fragment.internal_criticism or "",
         "first_words": fragment.first_words or "",
@@ -277,7 +285,7 @@ def get_task(task_id: int):
             .all()
         )
 
-        progress, current_step, step_label, stages = _get_stage_info(task)
+        progress, current_step, step_label, stages = _get_stage_info(task, fragments)
 
         clips_dto = [_serialize_fragment_dto(f, task.youtube_url) for f in fragments]
         ready_count = sum(1 for c in clips_dto if c["status"] == "ready")
@@ -295,6 +303,7 @@ def get_task(task_id: int):
                 ),
             "current_step": current_step,
             "step_label": step_label,
+            "step_detail": getattr(task, "step_detail", None) or "",
             "error_message": task.error_message,
             "stages": stages,
             "clips_summary": {
@@ -334,7 +343,7 @@ def get_task_status(task_id: int):
             .all()
         )
 
-        progress, current_step, step_label, stages = _get_stage_info(task)
+        progress, current_step, step_label, stages = _get_stage_info(task, fragments)
 
         clips_dto = [_serialize_fragment_dto(f, task.youtube_url) for f in fragments]
         ready_count = sum(1 for c in clips_dto if c["status"] == "ready")

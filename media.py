@@ -19,7 +19,7 @@ def download_source_video(youtube_url: str, task_id: int) -> str:
 
     output_template = str(SHARED_MEDIA_DIR / f"{task_id}_source.%(ext)s")
     options = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo+bestaudio/best",
         "outtmpl": output_template,
         "noplaylist": True,
         "quiet": True,
@@ -28,7 +28,7 @@ def download_source_video(youtube_url: str, task_id: int) -> str:
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"],
+                "player_client": ["android", "ios", "web"],
             }
         },
         "http_headers": {
@@ -95,7 +95,7 @@ def download_audio(youtube_url: str, task_id: int, source_video_path: str | None
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"],
+                "player_client": ["android", "ios", "web"],
             }
         },
         "http_headers": {
@@ -161,12 +161,16 @@ def cut_vertical_clip(
         "-t", f"{duration:.3f}",
         "-i", str(source_path),
         "-vf", crop_filter,
+        "-sws_flags", "lanczos",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
-        "-preset", "veryfast",
-        "-crf", "22",
+        "-preset", "medium",
+        "-crf", "18",
+        "-b:v", "6000k",
+        "-maxrate", "8000k",
+        "-bufsize", "12000k",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "192k",
         "-movflags", "+faststart",
         str(output_path)
     ]
